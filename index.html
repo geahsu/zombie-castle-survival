@@ -2,7 +2,2475 @@
 <html lang="zh-Hans">
 <head>
   <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=<!DOCTYPE html>
+<html lang="zh-Hans">
+<head>
+  <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>僵尸生存：僵尸末日生存 - 经验转移版</title>
+  <style>
+    :root {
+      --bg: #0c1117;
+      --panel: rgba(12, 17, 23, 0.86);
+      --line: rgba(255,255,255,0.18);
+      --gold: #f6c453;
+      --green: #58b368;
+      --red: #e45d5d;
+      --text: #f4f0dc;
+    }
+    html, body {
+      margin: 0;
+      min-height: 100%;
+      background: radial-gradient(circle at top, #213042, #090c10 65%);
+      color: var(--text);
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+      overflow: hidden;
+    }
+    .wrap {
+      height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 12px;
+      box-sizing: border-box;
+    }
+    canvas {
+      width: min(100vw - 24px, 1100px);
+      max-height: calc(100vh - 24px);
+      aspect-ratio: 1000 / 620;
+      border: 4px solid #2c2014;
+      border-radius: 14px;
+      background: #111;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.65), inset 0 0 0 1px rgba(255,255,255,0.08);
+      image-rendering: pixelated;
+      cursor: crosshair;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <canvas id="game" width="1000" height="620" aria-label="Zombie Survival Game"></canvas>
+  </div>
+
+<script>
+(() => {
+  'use strict';
+
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width;
+  const H = canvas.height;
+
+  const STATE = {
+    MENU: 'menu',
+    INTRO: 'intro',
+    PLAY: 'play',
+    GAME_OVER: 'gameOver',
+    WIN: 'win'
+  };
+
+  const game = {
+    state: STATE.MENU,
+    time: 0,
+    last: performance.now(),
+    introTime: 0,
+    day: 1,
+    phase: 'night',
+    phaseTimer: 60,
+    waveNumber: 0,
+    money: 300,
+    message: '点击开始，守住城堡。',
+    messageTimer: 0,
+    selectedPlot: null,
+    selectedTower: null,
+    mouse: { x: 0, y: 0 },
+    castle: { x: 54, y: 184, w: 132, h: 280, hp: 1000, maxHp: 1000 },
+    wave: null,
+    zombies: [],
+    towers: [],
+    guards: [],
+    bullets: [],
+    floatTexts: [],
+    particles: [],
+    bossAttacks: [],
+    magicBalls: [],
+    witch: { cooldown: 0, casting: 0 },
+    bossSpawnedThisNight: false,
+    bossSpawnTimer: 0,
+    plots: [],
+    uiButtons: [],
+    upgradeButtons: []
+  };
+
+  const rules = {
+    nightDuration: 60,
+    buildDuration: 0,
+    waveSize: 5,
+    waveBreak: 10,
+    unlockGrassCost: 20,
+    towerCost: 100,
+    towerPaidUpgradeCost: 500,
+    towerPaidUpgradeMax: 4,
+    guardCost: 50,
+    zombieHp: 100,
+    zombieHpGrowthPerDay: 0.30,
+    reflectZombieHp: 500,
+    zombieDamage: 10,
+    zombieCastleDamageMultiplier: 5,
+    guardHp: 120,
+    guardDamage: 20,
+    guardAggroRange: 320,
+    witchRange: 360,
+    witchDamage: 30,
+    witchAttackRadius: 72,
+    witchFireRate: 2.2,
+    witchProjectileSpeed: 470,
+    towerHp: 100,
+    towerDamage: 1,
+    towerFireRate: 0.08,
+    towerRange: 185,
+    towerKillsForUpgrade: 10,
+    towerMaxLevel: 4,
+    reward: 10,
+    ultimateBossHp: 5000,
+    ultimateBossSpeed: 9,
+    ultimateBossAttackInterval: 60,
+    ultimateBossAttackRadius: 95,
+    ultimateBossAttackDamage: 75,
+    ultimateBossReward: 200
+  };
+
+  const path = [
+    { x: 964, y: 340 },
+    { x: 790, y: 340 },
+    { x: 746, y: 250 },
+    { x: 575, y: 250 },
+    { x: 535, y: 392 },
+    { x: 375, y: 392 },
+    { x: 248, y: 330 },
+    { x: 178, y: 330 }
+  ];
+
+  const pathData = buildPathData(path);
+
+  function buildPathData(points) {
+    const segments = [];
+    let total = 0;
+    for (let i = 0; i < points.length - 1; i++) {
+      const a = points[i];
+      const b = points[i + 1];
+      const len = dist(a.x, a.y, b.x, b.y);
+      segments.push({ a, b, len, start: total, end: total + len });
+      total += len;
+    }
+    return { segments, total };
+  }
+
+  function getPointOnPath(progress) {
+    const p = clamp(progress, 0, pathData.total);
+    for (const s of pathData.segments) {
+      if (p <= s.end) {
+        const t = (p - s.start) / s.len;
+        return {
+          x: lerp(s.a.x, s.b.x, t),
+          y: lerp(s.a.y, s.b.y, t),
+          angle: Math.atan2(s.b.y - s.a.y, s.b.x - s.a.x)
+        };
+      }
+    }
+    const last = path[path.length - 1];
+    return { x: last.x, y: last.y, angle: Math.PI };
+  }
+
+  function resetGame() {
+    game.state = STATE.PLAY;
+    game.time = 0;
+    game.day = 1;
+    game.phase = 'night';
+    game.phaseTimer = rules.nightDuration;
+    game.waveNumber = 0;
+    game.money = 300;
+    game.message = '第一天黑夜：每波固定 5 只普通方块僵尸，普通僵尸 100 HP。第 2 天跑步者加入，第 3 天死神加入，第 4 天反效果僵尸加入，第 5 天开始每 5 天出现终极魔王。城堡上方的女巫会自动丢魔法球，范围内僵尸扣 30 血。';
+    game.messageTimer = 7;
+    game.castle.hp = game.castle.maxHp;
+    game.zombies.length = 0;
+    game.towers.length = 0;
+    game.guards.length = 0;
+    game.bullets.length = 0;
+    game.floatTexts.length = 0;
+    game.particles.length = 0;
+    game.bossAttacks.length = 0;
+    game.magicBalls.length = 0;
+    game.witch.cooldown = 0;
+    game.witch.casting = 0;
+    game.bossSpawnedThisNight = false;
+    game.bossSpawnTimer = 0;
+    game.selectedPlot = null;
+    game.selectedTower = null;
+    game.plots = [
+      { id: 1, x: 690, y: 295, r: 36, unlocked: true, tower: null, label: '赠送地块' },
+      { id: 2, x: 618, y: 178, r: 36, unlocked: false, tower: null },
+      { id: 3, x: 468, y: 300, r: 36, unlocked: false, tower: null },
+      { id: 4, x: 430, y: 475, r: 36, unlocked: false, tower: null },
+      { id: 5, x: 725, y: 424, r: 36, unlocked: false, tower: null },
+      { id: 6, x: 865, y: 250, r: 36, unlocked: false, tower: null },
+      { id: 7, x: 295, y: 235, r: 36, unlocked: false, tower: null },
+      { id: 8, x: 272, y: 430, r: 36, unlocked: false, tower: null }
+    ];
+    startNight(1, true);
+  }
+
+  function startNight(day, keepMessage = false) {
+    game.day = day;
+    game.phase = 'night';
+    game.phaseTimer = rules.nightDuration;
+    game.waveNumber = 0;
+    game.wave = isUltimateBossDay(day) ? null : createWave(2.2);
+    game.bossAttacks.length = 0;
+    game.magicBalls.length = 0;
+    game.witch.cooldown = 0;
+    game.witch.casting = 0;
+    game.bossSpawnedThisNight = false;
+    game.bossSpawnTimer = isUltimateBossDay(day) ? 4.0 : 0;
+    const todayHp = zombieHpForDay(day);
+    if (!keepMessage) {
+      if (day === 1) {
+        game.message = '第 1 天黑夜开始：普通僵尸每波 5 只，HP ' + todayHp + '。打完一波后 10 秒会再来一波。';
+      } else if (day === 2) {
+        game.message = '第 2 天黑夜开始：跑步者加入！今天普通僵尸 HP ' + todayHp + '，跑步者会混在每波里面。';
+      } else if (day === 3) {
+        game.message = '第 3 天黑夜开始：死神加入战场！死神 1000 HP，每 3 秒往前短距离传送。';
+      } else if (day === 4) {
+        game.message = '第 4 天黑夜开始：反效果僵尸加入！它有 500 HP，而且雷射／闪电炮台打不到它。';
+      } else if (isUltimateBossDay(day)) {
+        game.message = '第 ' + day + ' 天黑夜开始：终极魔王即将出现！魔王战不会生产普通僵尸，场上僵尸会被清空。';
+      } else {
+        game.message = '第 ' + day + ' 天黑夜开始：僵尸血量每天增加 30%，今天普通僵尸 HP ' + todayHp + '。';
+      }
+      game.messageTimer = 7;
+    }
+    showFloat('第 ' + day + ' 天黑夜', 500, 165, isUltimateBossDay(day) ? '#ff7070' : (day >= 3 ? '#d9b7ff' : '#b5d4ff'));
+  }
+
+  function startBuildPhase() {
+    // 现在没有白天建造期：黑夜 1 分钟结束后直接进入下一天黑夜。
+    startNight(game.day + 1);
+  }
+
+  function createWave(firstDelay) {
+    return {
+      total: rules.waveSize,
+      spawned: 0,
+      spawnTimer: firstDelay,
+      nextGap: 2.15,
+      breakTimer: 0,
+      warningDuration: 2.05,
+      finished: false
+    };
+  }
+
+  function zombieHpForDay(day) {
+    const safeDay = Math.max(1, day || 1);
+    return Math.round(rules.zombieHp * Math.pow(1 + rules.zombieHpGrowthPerDay, safeDay - 1));
+  }
+
+  function isUltimateBossDay(day = game.day) {
+    return day > 0 && day % 5 === 0;
+  }
+
+  function hasUltimateBossAlive() {
+    return game.zombies.some(z => z.alive && z.colorMode === 'ultimate');
+  }
+
+  function clearNormalZombiesForBoss() {
+    let removed = 0;
+    for (const z of game.zombies) {
+      if (z.alive && z.colorMode !== 'ultimate') {
+        z.alive = false;
+        removed++;
+        for (let i = 0; i < 8; i++) addParticle(z.x + rand(-15, 15), z.y + rand(-60, -10), rand(-25, 25), rand(-35, 12), '#dff7ff', 0.45, 3);
+      }
+    }
+    game.zombies = game.zombies.filter(z => z.alive);
+    game.bullets = game.bullets.filter(b => b.target && b.target.alive);
+    game.wave = null;
+    if (removed > 0) showFloat('魔王威压：场上僵尸全部消失', 500, 150, '#ffb0b0');
+  }
+
+  function startIntro() {
+    game.state = STATE.INTRO;
+    game.introTime = 0;
+    game.message = '城墙开始晃动……';
+    game.messageTimer = 0;
+  }
+
+  function update(dt) {
+    game.time += dt;
+
+    if (game.messageTimer > 0) {
+      game.messageTimer -= dt;
+      if (game.messageTimer <= 0) game.message = '';
+    }
+
+    if (game.state === STATE.INTRO) {
+      updateIntro(dt);
+    } else if (game.state === STATE.PLAY) {
+      updatePlay(dt);
+    }
+
+    updateParticles(dt);
+    updateFloatTexts(dt);
+  }
+
+  function updateIntro(dt) {
+    game.introTime += dt;
+    if (game.introTime > 5.2) {
+      resetGame();
+    }
+  }
+
+  function updatePlay(dt) {
+    updateDayCycle(dt);
+    updateBossSpawning(dt);
+    spawnWave(dt);
+    updateZombies(dt);
+    updateGuards(dt);
+    updateTowers(dt);
+    updateWitch(dt);
+    updateBullets(dt);
+    updateMagicBalls(dt);
+    updateBossAttacks(dt);
+
+    if (game.castle.hp <= 0) {
+      game.castle.hp = 0;
+      game.state = STATE.GAME_OVER;
+      game.message = '城堡倒塌了，游戏结束。';
+    }
+  }
+
+  function updateDayCycle(dt) {
+    if (game.phase === 'night') {
+      // 终极魔王在场时暂停黑夜倒计时，必须先打倒魔王，才会进入下一天。
+      if (hasUltimateBossAlive()) return;
+      game.phaseTimer -= dt;
+      if (game.phaseTimer <= 0) startNight(game.day + 1);
+    }
+  }
+
+  function updateBossSpawning(dt) {
+    if (game.state !== STATE.PLAY || game.phase !== 'night') return;
+    if (game.bossSpawnedThisNight || !isUltimateBossDay(game.day) || hasUltimateBossAlive()) return;
+    game.bossSpawnTimer -= dt;
+    if (game.bossSpawnTimer <= 0) {
+      game.bossSpawnedThisNight = true;
+      spawnUltimateBoss();
+    }
+  }
+
+  function spawnWave(dt) {
+    if (game.phase !== 'night') return;
+    // Boss 日是纯魔王战；魔王出现或还活着时，不会再生产普通僵尸、跑步者或死神。
+    if (isUltimateBossDay(game.day) || hasUltimateBossAlive()) return;
+    const wave = game.wave;
+    if (!wave) return;
+
+    if (wave.finished) {
+      wave.breakTimer -= dt;
+      if (wave.breakTimer <= 0) {
+        game.waveNumber++;
+        game.wave = createWave(0.35);
+      }
+      return;
+    }
+
+    wave.spawnTimer -= dt;
+    if (wave.spawnTimer <= 0 && wave.spawned < wave.total) {
+      wave.spawned++;
+      spawnZombieForCurrentDay(wave.spawned);
+      wave.spawnTimer = wave.nextGap;
+      if (wave.spawned === 1) {
+        const label = '第 ' + game.day + ' 天 · 第 ' + (game.waveNumber + 1) + ' 波：5 只僵尸！';
+        showFloat(label, 805, 286, '#e7f6d5');
+      }
+    }
+    if (wave.spawned >= wave.total) {
+      wave.finished = true;
+      wave.breakTimer = rules.waveBreak;
+      game.message = '这一波 5 只已经全部出现。' + rules.waveBreak + ' 秒后下一波会来，黑夜结束前不会停止。';
+      game.messageTimer = 3.5;
+    }
+  }
+
+  function spawnZombieForCurrentDay(indexInWave) {
+    const todayHp = zombieHpForDay(game.day);
+    if (game.day >= 3 && indexInWave === 5) {
+      spawnZombie({ type: '死神', hp: 1000, speed: 18, colorMode: 'reaper', teleportEvery: 3, teleportDistance: 58 });
+    } else if (game.day >= 4 && indexInWave === 3) {
+      spawnZombie({ type: '反效果僵尸', hp: rules.reflectZombieHp, speed: 22, colorMode: 'reflect', immuneElements: ['雷射', '闪电', '雷'] });
+    } else if (game.day >= 2 && (indexInWave === 2 || indexInWave === 4)) {
+      spawnZombie({ type: '跑步者', hp: todayHp, speed: 44, colorMode: 'fast' });
+    } else {
+      spawnZombie({ type: '普通僵尸', hp: todayHp, speed: 24, colorMode: 'normal' });
+    }
+  }
+
+  function spawnUltimateBoss() {
+    clearNormalZombiesForBoss();
+    spawnZombie({
+      type: '终极魔王',
+      hp: rules.ultimateBossHp,
+      speed: rules.ultimateBossSpeed,
+      colorMode: 'ultimate',
+      bossAttackEvery: rules.ultimateBossAttackInterval,
+      bossAttackRadius: rules.ultimateBossAttackRadius,
+      bossAttackDamage: rules.ultimateBossAttackDamage,
+      reward: rules.ultimateBossReward
+    });
+    game.message = '终极魔王出现！场上其他僵尸全部消失，魔王还在的时候不会再生产僵尸。';
+    game.messageTimer = 6;
+    showFloat('终极魔王出现！', path[0].x - 20, path[0].y - 130, '#ff6b6b');
+    screenShake(5);
+  }
+
+  function spawnZombie(opts = {}) {
+    const z = {
+      type: opts.type || '普通僵尸',
+      colorMode: opts.colorMode || 'normal',
+      progress: 0,
+      x: path[0].x,
+      y: path[0].y,
+      hp: opts.hp || rules.zombieHp,
+      maxHp: opts.hp || rules.zombieHp,
+      damage: rules.zombieDamage,
+      speed: opts.speed || 30,
+      materializeTimer: 0.62,
+      chargeTimer: 0,
+      runPhase: rand(0, Math.PI * 2),
+      attackCooldown: 0,
+      teleportTimer: opts.teleportEvery || 0,
+      teleportEvery: opts.teleportEvery || 0,
+      teleportDistance: opts.teleportDistance || 0,
+      bossAttackTimer: opts.bossAttackEvery || 0,
+      bossAttackEvery: opts.bossAttackEvery || 0,
+      bossAttackRadius: opts.bossAttackRadius || 0,
+      bossAttackDamage: opts.bossAttackDamage || 0,
+      reward: opts.reward || rules.reward,
+      immuneElements: opts.immuneElements || [],
+      targetGuard: null,
+      slowTimer: 0,
+      slowAmount: 0,
+      burnTimer: 0,
+      burnTick: 0,
+      alive: true,
+      hitByTowerId: null
+    };
+    game.zombies.push(z);
+    for (let i = 0; i < 14; i++) {
+      addParticle(z.x + rand(-20, 20), z.y + rand(-75, -20), rand(-28, 28), rand(-45, 5), '#dff7ff', 0.52, 3);
+    }
+    showFloat('幽灵成形', z.x, z.y - 86, '#dff7ff');
+  }
+
+  function updateZombies(dt) {
+    for (const z of game.zombies) {
+      if (!z.alive) continue;
+
+      if (z.slowTimer > 0) z.slowTimer -= dt;
+      if (z.burnTimer > 0) {
+        z.burnTimer -= dt;
+        z.burnTick -= dt;
+        if (z.burnTick <= 0) {
+          z.burnTick = 0.5;
+          damageZombie(z, 1, null, '火');
+        }
+      }
+
+      z.attackCooldown -= dt;
+
+      // 刚出现时，先在幽灵圈圈里成形；成形后才沿着道路慢慢走。
+      if (z.materializeTimer > 0) {
+        z.materializeTimer -= dt;
+        continue;
+      }
+
+      updateBossSpecial(z, dt);
+
+      z.targetGuard = findGuardInMelee(z);
+
+      if (z.targetGuard) {
+        if (z.attackCooldown <= 0) {
+          z.attackCooldown = 1.0;
+          damageGuard(z.targetGuard, z.damage);
+          showFloat('-' + z.damage, z.targetGuard.x, z.targetGuard.y - 32, '#ff8b8b');
+          addSlash(z.targetGuard.x, z.targetGuard.y);
+        }
+        continue;
+      }
+
+      if (z.progress >= pathData.total - 2) {
+        if (z.attackCooldown <= 0) {
+          z.attackCooldown = 1.0;
+          const dmg = z.damage * rules.zombieCastleDamageMultiplier;
+          game.castle.hp -= dmg;
+          showFloat('城堡 -' + dmg, game.castle.x + 90, game.castle.y + 70, '#ff6b6b');
+          screenShake(5);
+          for (let i = 0; i < 12; i++) addParticle(game.castle.x + game.castle.w, z.y + rand(-30, 30), rand(20, 80), rand(-30, 30), '#b98b5d', 0.55, 4);
+        }
+        continue;
+      }
+
+      if (z.teleportEvery > 0) {
+        z.teleportTimer -= dt;
+        if (z.teleportTimer <= 0) {
+          z.teleportTimer = z.teleportEvery;
+          const before = z.progress;
+          z.progress = Math.min(pathData.total - 2, z.progress + z.teleportDistance);
+          const p2 = getPointOnPath(z.progress);
+          z.x = p2.x;
+          z.y = p2.y;
+          showFloat('死神传送', z.x, z.y - 82, '#d9b7ff');
+          for (let i = 0; i < 22; i++) addParticle(z.x, z.y - 35, rand(-48, 48), rand(-55, 32), '#b58cff', 0.75, 4);
+          if (z.progress > before) screenShake(2.5);
+        }
+      }
+
+      const slow = z.slowTimer > 0 ? z.slowAmount : 0;
+      if (z.chargeTimer > 0) z.chargeTimer -= dt;
+      z.progress += z.speed * (1 - slow) * dt;
+      const p = getPointOnPath(z.progress);
+      z.x = p.x;
+      z.y = p.y;
+    }
+
+    game.zombies = game.zombies.filter(z => z.alive);
+  }
+
+  function updateBossSpecial(z, dt) {
+    if (z.colorMode !== 'ultimate' || z.bossAttackEvery <= 0) return;
+    z.bossAttackTimer -= dt;
+    if (z.bossAttackTimer <= 0) {
+      z.bossAttackTimer = z.bossAttackEvery;
+      createBossTridentAttack(z);
+    }
+  }
+
+  function createBossTridentAttack(boss) {
+    const target = chooseBossAttackTarget(boss);
+    const attack = {
+      x: target.x,
+      y: target.y,
+      r: boss.bossAttackRadius || rules.ultimateBossAttackRadius,
+      damage: boss.bossAttackDamage || rules.ultimateBossAttackDamage,
+      timer: 1.35,
+      maxTimer: 1.35,
+      applied: false
+    };
+    game.bossAttacks.push(attack);
+    showFloat('三叉戟锁定！', attack.x, attack.y - attack.r - 10, '#ff8b8b');
+    for (let i = 0; i < 16; i++) addParticle(boss.x + rand(-12, 12), boss.y - 70 + rand(-12, 12), rand(-60, 60), rand(-80, 10), '#ff6565', 0.65, 4);
+  }
+
+  function chooseBossAttackTarget(boss) {
+    const candidates = [];
+    for (const t of game.towers) if (t.hp > 0) candidates.push({ x: t.x, y: t.y });
+    for (const g of game.guards) if (g.hp > 0) candidates.push({ x: g.x, y: g.y });
+    if (!candidates.length) return { x: game.castle.x + game.castle.w + 30, y: game.castle.y + game.castle.h * 0.62 };
+
+    let best = candidates[0];
+    let bestScore = Infinity;
+    for (const c of candidates) {
+      const score = dist(boss.x, boss.y, c.x, c.y) + rand(0, 90);
+      if (score < bestScore) {
+        bestScore = score;
+        best = c;
+      }
+    }
+    return best;
+  }
+
+  function updateBossAttacks(dt) {
+    for (const a of game.bossAttacks) {
+      a.timer -= dt;
+      if (!a.applied && a.timer <= 0) {
+        a.applied = true;
+        applyBossTridentAttack(a);
+      }
+    }
+    game.bossAttacks = game.bossAttacks.filter(a => a.timer > -0.38);
+  }
+
+  function applyBossTridentAttack(a) {
+    screenShake(6);
+    showFloat('三叉戟轰击！', a.x, a.y - a.r - 14, '#ffdfdf');
+    for (const g of game.guards) {
+      if (g.hp > 0 && dist(g.x, g.y, a.x, a.y) <= a.r) {
+        damageGuard(g, a.damage);
+        showFloat('-' + a.damage, g.x, g.y - 40, '#ff8b8b');
+      }
+    }
+    for (const t of game.towers) {
+      if (t.hp > 0 && dist(t.x, t.y, a.x, a.y) <= a.r) {
+        t.hp -= a.damage;
+        showFloat('炮台 -' + a.damage, t.x, t.y - 52, '#ff8b8b');
+        if (t.hp <= 0) {
+          t.hp = 0;
+          showFloat('炮台损坏', t.x, t.y - 72, '#ffb0b0');
+          if (t.plot) t.plot.tower = null;
+        }
+      }
+    }
+    if (circleRectOverlap(a.x, a.y, a.r, game.castle.x, game.castle.y, game.castle.w, game.castle.h)) {
+      const castleDmg = Math.round(a.damage * 1.5);
+      game.castle.hp -= castleDmg;
+      showFloat('城堡 -' + castleDmg, game.castle.x + 96, game.castle.y + 70, '#ff6b6b');
+    }
+    for (let i = 0; i < 44; i++) addParticle(a.x + rand(-a.r * 0.65, a.r * 0.65), a.y + rand(-a.r * 0.45, a.r * 0.45), rand(-90, 90), rand(-120, 35), i % 2 ? '#ff5a5a' : '#ffd3a3', 0.7, rand(3, 6));
+  }
+
+  function findGuardInMelee(z) {
+    let best = null;
+    let bestD = Infinity;
+    for (const g of game.guards) {
+      if (g.hp <= 0) continue;
+      const d = dist(z.x, z.y, g.x, g.y);
+      if (d < 35 && d < bestD) {
+        bestD = d;
+        best = g;
+      }
+    }
+    return best;
+  }
+
+  function canTowerGainKillExperience(tower) {
+    return tower && tower.hp > 0 && tower.level < rules.towerMaxLevel && !tower.readyUpgrade;
+  }
+
+  function grantTowerKillExperience(tower, transferred = false) {
+    if (!canTowerGainKillExperience(tower)) return false;
+    tower.kills++;
+    if (transferred) {
+      showFloat('经验 +1', tower.x, tower.y - 82, '#ffe066');
+      for (let i = 0; i < 7; i++) addParticle(tower.x + rand(-18, 18), tower.y + rand(38, 58), rand(-25, 25), rand(-55, -12), '#ffe066', 0.42, 3);
+    }
+    if (tower.kills >= rules.towerKillsForUpgrade && tower.level < rules.towerMaxLevel) {
+      tower.readyUpgrade = true;
+      tower.kills = rules.towerKillsForUpgrade;
+      game.selectedTower = tower;
+      game.selectedPlot = null;
+      game.message = transferred
+        ? '满级炮台的击杀经验转移成功！有一座炮台金条亮了，可以免费升级。'
+        : '炮台金条亮了！点击炮台，选择免费升级属性。';
+      game.messageTimer = 5;
+    }
+    return true;
+  }
+
+  function transferKillExperienceFromMaxTower(sourceTower) {
+    const candidates = game.towers
+      .filter(t => t !== sourceTower && canTowerGainKillExperience(t))
+      .sort((a, b) => {
+        if (b.kills !== a.kills) return b.kills - a.kills; // 优先给金条快满的炮台。
+        return dist(sourceTower.x, sourceTower.y, a.x, a.y) - dist(sourceTower.x, sourceTower.y, b.x, b.y);
+      });
+    if (candidates.length === 0) return false;
+    return grantTowerKillExperience(candidates[0], true);
+  }
+
+  function awardTowerKillExperience(sourceTower) {
+    if (!sourceTower) return;
+    sourceTower.totalKills++;
+
+    if (canTowerGainKillExperience(sourceTower)) {
+      grantTowerKillExperience(sourceTower, false);
+      return;
+    }
+
+    // 满级炮台，或金条已经亮起还没选择升级的炮台，不再浪费击杀经验。
+    const transferred = transferKillExperienceFromMaxTower(sourceTower);
+    if (transferred) {
+      showFloat('经验转移', sourceTower.x, sourceTower.y - 94, '#ffe066');
+    }
+  }
+
+  function damageZombie(z, amount, sourceTower, tag = '') {
+    if (!z.alive) return;
+    z.hp -= amount;
+    if (sourceTower) z.hitByTowerId = sourceTower.id;
+    if (z.hp <= 0) {
+      z.alive = false;
+      const reward = z.reward || rules.reward;
+      game.money += reward;
+      showFloat('+$' + reward, z.x, z.y - 30, '#f6d36b');
+      showFloat(tag ? tag + ' 击倒' : '击倒', z.x, z.y - 50, '#fff2a8');
+      burstZombie(z.x, z.y, z.colorMode);
+      if (z.colorMode === 'ultimate') {
+        game.message = '终极魔王被打倒了！这一晚不会再生产僵尸，倒计时结束后进入下一天。';
+        game.messageTimer = 6;
+        showFloat('魔王倒下！', z.x, z.y - 110, '#fff2a8');
+        screenShake(7);
+      }
+      if (sourceTower) awardTowerKillExperience(sourceTower);
+    }
+  }
+
+  function updateGuards(dt) {
+    for (const g of game.guards) {
+      if (g.hp <= 0) continue;
+      g.attackCooldown -= dt;
+      const target = nearestZombie(g.x, g.y, rules.guardAggroRange);
+
+      if (target) {
+        const d = dist(g.x, g.y, target.x, target.y);
+        if (d > 26) {
+          // 护卫会主动冲出去打，不会只站在城堡旁边等。
+          const a = Math.atan2(target.y - g.y, target.x - g.x);
+          g.x += Math.cos(a) * g.speed * 1.25 * dt;
+          g.y += Math.sin(a) * g.speed * 1.25 * dt;
+        } else if (g.attackCooldown <= 0) {
+          g.attackCooldown = 0.75;
+          damageZombie(target, g.damage, null, '护卫');
+          showFloat('-' + g.damage, target.x, target.y - 36, '#ffe6a3');
+          addSlash(target.x, target.y);
+        }
+      } else {
+        const dHome = dist(g.x, g.y, g.homeX, g.homeY);
+        if (dHome > 4) {
+          const a = Math.atan2(g.homeY - g.y, g.homeX - g.x);
+          g.x += Math.cos(a) * g.speed * 0.55 * dt;
+          g.y += Math.sin(a) * g.speed * 0.55 * dt;
+        }
+      }
+    }
+    game.guards = game.guards.filter(g => g.hp > 0);
+  }
+
+  function damageGuard(g, amount) {
+    g.hp -= amount;
+    if (g.hp <= 0) {
+      g.hp = 0;
+      showFloat('护卫倒下', g.x, g.y - 32, '#ffb0b0');
+      for (let i = 0; i < 10; i++) addParticle(g.x, g.y, rand(-35, 35), rand(-35, 35), '#b0653c', 0.5, 3);
+    }
+  }
+
+  function updateTowers(dt) {
+    for (const t of game.towers) {
+      if (t.hp <= 0) continue;
+      t.cooldown -= dt;
+      if (t.cooldown <= 0) {
+        const target = foremostZombieInRange(t.x, t.y, t.range, t.element || '普通');
+        if (target) {
+          t.cooldown = Math.max(0.035, t.fireRate);
+          fireTower(t, target);
+        }
+      }
+    }
+    game.towers = game.towers.filter(t => t.hp > 0);
+  }
+
+  function fireTower(t, target) {
+    const bullet = {
+      x: t.x,
+      y: t.y - 18,
+      tx: target.x,
+      ty: target.y,
+      target,
+      tower: t,
+      speed: 560,
+      damage: t.damage,
+      life: 1.2,
+      kind: t.element || '普通'
+    };
+    game.bullets.push(bullet);
+  }
+
+  function updateBullets(dt) {
+    for (const b of game.bullets) {
+      b.life -= dt;
+      if (!b.target || !b.target.alive || b.life <= 0) {
+        b.dead = true;
+        continue;
+      }
+      b.tx = b.target.x;
+      b.ty = b.target.y;
+      const d = dist(b.x, b.y, b.tx, b.ty);
+      if (d < 11) {
+        applyBulletHit(b);
+        b.dead = true;
+      } else {
+        const a = Math.atan2(b.ty - b.y, b.tx - b.x);
+        b.x += Math.cos(a) * b.speed * dt;
+        b.y += Math.sin(a) * b.speed * dt;
+      }
+    }
+    game.bullets = game.bullets.filter(b => !b.dead);
+  }
+
+
+  function witchPosition() {
+    return { x: game.castle.x + game.castle.w * 0.5, y: game.castle.y - 32 };
+  }
+
+  function updateWitch(dt) {
+    if (game.state !== STATE.PLAY) return;
+    game.witch.cooldown = Math.max(0, game.witch.cooldown - dt);
+    game.witch.casting = Math.max(0, game.witch.casting - dt);
+    if (game.witch.cooldown > 0) return;
+
+    const pos = witchPosition();
+    const target = foremostZombieInRange(pos.x, pos.y, rules.witchRange, '女巫魔法');
+    if (!target) return;
+
+    game.witch.cooldown = rules.witchFireRate;
+    game.witch.casting = 0.45;
+    fireWitchMagic(target);
+  }
+
+  function fireWitchMagic(target) {
+    const pos = witchPosition();
+    game.magicBalls.push({
+      x: pos.x + 18,
+      y: pos.y + 8,
+      target,
+      tx: target.x,
+      ty: target.y,
+      speed: rules.witchProjectileSpeed,
+      radius: rules.witchAttackRadius,
+      damage: rules.witchDamage,
+      life: 1.8,
+      dead: false
+    });
+    showFloat('女巫施法！', pos.x + 10, pos.y - 34, '#dca6ff');
+    for (let i = 0; i < 10; i++) addParticle(pos.x + 16, pos.y + 6, rand(-35, 35), rand(-45, 5), '#dca6ff', 0.38, 3);
+  }
+
+  function updateMagicBalls(dt) {
+    for (const m of game.magicBalls) {
+      m.life -= dt;
+      if (m.life <= 0) {
+        m.dead = true;
+        continue;
+      }
+      if (m.target && m.target.alive) {
+        m.tx = m.target.x;
+        m.ty = m.target.y - 18;
+      }
+      const d = dist(m.x, m.y, m.tx, m.ty);
+      if (d < 13) {
+        explodeWitchMagic(m);
+        m.dead = true;
+      } else {
+        const a = Math.atan2(m.ty - m.y, m.tx - m.x);
+        m.x += Math.cos(a) * m.speed * dt;
+        m.y += Math.sin(a) * m.speed * dt;
+      }
+    }
+    game.magicBalls = game.magicBalls.filter(m => !m.dead);
+  }
+
+  function explodeWitchMagic(m) {
+    showFloat('魔法爆炸 -' + m.damage, m.x, m.y - m.radius - 8, '#f2c2ff');
+    let hitCount = 0;
+    for (const z of game.zombies) {
+      if (!z.alive || z.materializeTimer > 0) continue;
+      if (dist(z.x, z.y - 22, m.x, m.y) <= m.radius) {
+        damageZombie(z, m.damage, null, '女巫');
+        showFloat('-' + m.damage, z.x, z.y - 44, '#f2c2ff');
+        hitCount++;
+      }
+    }
+    if (hitCount > 0) screenShake(2.5);
+    for (let i = 0; i < 34; i++) addParticle(m.x + rand(-m.radius * 0.5, m.radius * 0.5), m.y + rand(-m.radius * 0.35, m.radius * 0.35), rand(-95, 95), rand(-120, 40), i % 2 ? '#dca6ff' : '#ffffff', 0.62, rand(3, 6));
+  }
+
+  function applyBulletHit(b) {
+    if (!b.target || !b.target.alive) return;
+    if (isZombieImmuneToElement(b.target, b.kind)) {
+      showFloat('闪电免疫', b.target.x, b.target.y - 42, '#87f6ff');
+      for (let i = 0; i < 8; i++) addParticle(b.target.x + rand(-14, 14), b.target.y + rand(-58, -16), rand(-35, 35), rand(-35, 10), '#87f6ff', 0.32, 3);
+      return;
+    }
+    let label = '';
+    if (b.kind === '雷射') label = '雷';
+    if (b.kind === '火焰') {
+      label = '火';
+      b.target.burnTimer = Math.max(b.target.burnTimer, 2.0);
+      b.target.burnTick = 0.15;
+    }
+    if (b.kind === '寒冰') {
+      label = '冰';
+      b.target.slowTimer = Math.max(b.target.slowTimer, 1.6);
+      b.target.slowAmount = Math.max(b.target.slowAmount, 0.45);
+    }
+    if (b.kind === '草地') {
+      label = '草';
+      b.target.slowTimer = Math.max(b.target.slowTimer, 0.8);
+      b.target.slowAmount = Math.max(b.target.slowAmount, 0.22);
+    }
+    damageZombie(b.target, b.damage, b.tower, label);
+    if (Math.random() < 0.18) showFloat('-' + b.damage, b.target.x, b.target.y - 30, '#ffffff');
+    addParticle(b.target.x, b.target.y, rand(-10, 10), rand(-20, 12), elementColor(b.kind), 0.24, 2);
+  }
+
+  function foremostZombieInRange(x, y, range, towerKind = '普通') {
+    let best = null;
+    let bestProgress = -Infinity;
+    let bestDistance = Infinity;
+    for (const z of game.zombies) {
+      if (!z.alive || z.materializeTimer > 0) continue;
+      if (isZombieImmuneToElement(z, towerKind)) continue;
+      const d = dist(x, y, z.x, z.y);
+      if (d <= range) {
+        // 炮台优先打“最前面的僵尸”：也就是沿路最靠近城堡、progress 最大的那只。
+        if (z.progress > bestProgress || (z.progress === bestProgress && d < bestDistance)) {
+          bestProgress = z.progress;
+          bestDistance = d;
+          best = z;
+        }
+      }
+    }
+    return best;
+  }
+
+  function nearestZombie(x, y, range) {
+    let best = null;
+    let bestScore = Infinity;
+    for (const z of game.zombies) {
+      if (!z.alive) continue;
+      const d = dist(x, y, z.x, z.y);
+      if (d <= range) {
+        const score = d;
+        if (score < bestScore) {
+          bestScore = score;
+          best = z;
+        }
+      }
+    }
+    return best;
+  }
+
+  function summonGuard() {
+    if (game.state !== STATE.PLAY) return;
+    if (game.money < rules.guardCost) {
+      game.message = '金币不够，召唤护卫需要 $' + rules.guardCost;
+      game.messageTimer = 2.2;
+      return;
+    }
+    game.money -= rules.guardCost;
+    const offset = game.guards.length * 18;
+    const g = {
+      x: 232,
+      y: 292 + offset % 72,
+      homeX: 232,
+      homeY: 292 + offset % 72,
+      hp: rules.guardHp,
+      maxHp: rules.guardHp,
+      damage: rules.guardDamage,
+      speed: 92,
+      attackCooldown: 0
+    };
+    game.guards.push(g);
+    showFloat('护卫加入', g.x, g.y - 30, '#cde6ff');
+  }
+
+  function buildTowerOnPlot(plot) {
+    if (game.money < rules.towerCost) {
+      game.message = '金币不够，普通炮台需要 $' + rules.towerCost;
+      game.messageTimer = 2.2;
+      return;
+    }
+    game.money -= rules.towerCost;
+    const tower = {
+      id: Date.now() + Math.floor(Math.random() * 10000),
+      x: plot.x,
+      y: plot.y,
+      hp: rules.towerHp,
+      maxHp: rules.towerHp,
+      damage: rules.towerDamage,
+      fireRate: rules.towerFireRate,
+      cooldown: 0,
+      range: rules.towerRange,
+      level: 0,
+      paidLevel: 0,
+      kills: 0,
+      totalKills: 0,
+      readyUpgrade: false,
+      element: '普通',
+      plot
+    };
+    plot.tower = tower;
+    game.towers.push(tower);
+    game.selectedTower = tower;
+    game.selectedPlot = null;
+    showFloat('普通连发炮台', tower.x, tower.y - 50, '#e8e0a5');
+  }
+
+  function unlockPlot(plot) {
+    if (game.money < rules.unlockGrassCost) {
+      game.message = '金币不够，买开草丛需要 $' + rules.unlockGrassCost;
+      game.messageTimer = 2.2;
+      return;
+    }
+    game.money -= rules.unlockGrassCost;
+    plot.unlocked = true;
+    game.selectedPlot = plot;
+    showFloat('草丛买开', plot.x, plot.y - 38, '#9effa9');
+  }
+
+  function paidUpgradeTower(tower) {
+    if (!tower) return;
+    if (tower.paidLevel >= rules.towerPaidUpgradeMax) {
+      game.message = '这个炮台已经付费强化满级了。';
+      game.messageTimer = 2.5;
+      return;
+    }
+    if (game.money < rules.towerPaidUpgradeCost) {
+      game.message = '金币不够，炮台强化需要 $' + rules.towerPaidUpgradeCost + '。';
+      game.messageTimer = 2.5;
+      return;
+    }
+    game.money -= rules.towerPaidUpgradeCost;
+    tower.paidLevel++;
+    tower.damage += 1;
+    tower.range += 18;
+    tower.maxHp += 25;
+    tower.hp = Math.min(tower.maxHp, tower.hp + 25);
+    tower.fireRate = Math.max(0.04, tower.fireRate - 0.006);
+    tower.cooldown = Math.min(tower.cooldown, tower.fireRate);
+    showFloat('强化 Lv.' + tower.paidLevel, tower.x, tower.y - 75, '#f6c453');
+    game.message = '花费 $' + rules.towerPaidUpgradeCost + '，炮台强化到 Lv.' + tower.paidLevel + '：伤害、射程、血量、射速都提升了。';
+    game.messageTimer = 4.5;
+  }
+
+  function upgradeTower(tower, element) {
+    if (!tower || !tower.readyUpgrade || tower.level >= rules.towerMaxLevel) return;
+    tower.level++;
+    tower.readyUpgrade = false;
+    tower.kills = 0;
+    tower.element = element;
+
+    if (element === '雷射') {
+      tower.damage += 2;
+      tower.range += 25;
+      tower.fireRate = Math.max(0.045, tower.fireRate - 0.008);
+    } else if (element === '火焰') {
+      tower.damage += 1;
+      tower.range += 10;
+    } else if (element === '寒冰') {
+      tower.damage += 1;
+      tower.fireRate = Math.max(0.055, tower.fireRate - 0.004);
+    } else if (element === '草地') {
+      tower.maxHp += 50;
+      tower.hp = Math.min(tower.maxHp, tower.hp + 50);
+      tower.range += 18;
+    }
+
+    showFloat(element + '升级 Lv.' + tower.level, tower.x, tower.y - 62, elementColor(element));
+    game.message = '炮台已升级为「' + element + '」Lv.' + tower.level + '。下一次再击倒 10 只可继续免费升级。';
+    game.messageTimer = 5;
+  }
+
+  function handleCanvasClick(x, y) {
+    game.mouse.x = x;
+    game.mouse.y = y;
+
+    if (game.state === STATE.MENU) {
+      if (pointInRect(x, y, 410, 304, 180, 68)) startIntro();
+      return;
+    }
+
+    if (game.state === STATE.INTRO) return;
+
+    if (game.state === STATE.GAME_OVER || game.state === STATE.WIN) {
+      if (pointInRect(x, y, 385, 448, 230, 62)) {
+        game.state = STATE.MENU;
+        game.message = '';
+      }
+      return;
+    }
+
+    if (game.state !== STATE.PLAY) return;
+
+    // UI buttons first
+    for (const btn of game.uiButtons) {
+      if (pointInRect(x, y, btn.x, btn.y, btn.w, btn.h)) {
+        btn.onClick();
+        return;
+      }
+    }
+    for (const btn of game.upgradeButtons) {
+      if (pointInRect(x, y, btn.x, btn.y, btn.w, btn.h)) {
+        btn.onClick();
+        return;
+      }
+    }
+
+    // Click tower
+    for (const t of game.towers) {
+      if (dist(x, y, t.x, t.y) < 34) {
+        game.selectedTower = t;
+        game.selectedPlot = null;
+        if (t.readyUpgrade) {
+          game.message = '选择一个免费属性升级：雷射 / 火焰 / 寒冰 / 草地。';
+          game.messageTimer = 3;
+        }
+        return;
+      }
+    }
+
+    // Click plot
+    for (const p of game.plots) {
+      if (dist(x, y, p.x, p.y) <= p.r + 4) {
+        game.selectedPlot = p;
+        game.selectedTower = p.tower || null;
+        if (!p.unlocked) {
+          unlockPlot(p);
+        } else if (!p.tower) {
+          buildTowerOnPlot(p);
+        }
+        return;
+      }
+    }
+  }
+
+  canvas.addEventListener('click', (e) => {
+    const p = eventToCanvas(e);
+    handleCanvasClick(p.x, p.y);
+  });
+
+  canvas.addEventListener('mousemove', (e) => {
+    const p = eventToCanvas(e);
+    game.mouse.x = p.x;
+    game.mouse.y = p.y;
+  });
+
+  window.addEventListener('keydown', (e) => {
+    if (e.key.toLowerCase() === 'g') summonGuard();
+    if (e.key.toLowerCase() === 'r' && (game.state === STATE.GAME_OVER || game.state === STATE.WIN)) game.state = STATE.MENU;
+    if (e.key === 'Escape') {
+      game.selectedPlot = null;
+      game.selectedTower = null;
+    }
+  });
+
+  function eventToCanvas(e) {
+    const rect = canvas.getBoundingClientRect();
+    return {
+      x: (e.clientX - rect.left) * (canvas.width / rect.width),
+      y: (e.clientY - rect.top) * (canvas.height / rect.height)
+    };
+  }
+
+  let shakePower = 0;
+  function screenShake(power) {
+    shakePower = Math.max(shakePower, power);
+  }
+
+  function render() {
+    ctx.save();
+    if (shakePower > 0) {
+      ctx.translate(rand(-shakePower, shakePower), rand(-shakePower, shakePower));
+      shakePower *= 0.86;
+      if (shakePower < 0.2) shakePower = 0;
+    }
+
+    if (game.state === STATE.MENU) drawMenu();
+    else if (game.state === STATE.INTRO) drawIntro();
+    else {
+      drawGameWorld();
+      drawGameUI();
+      if (game.state === STATE.GAME_OVER) drawEndOverlay(false);
+      if (game.state === STATE.WIN) drawEndOverlay(true);
+    }
+
+    drawParticles();
+    drawFloatTexts();
+    ctx.restore();
+  }
+
+  function drawMenu() {
+    drawNightBackground();
+    drawStars();
+    drawMenuZombies();
+
+    drawPixelText('僵尸生存', 500, 116, 58, '#f5f0d0', 'center');
+    drawPixelText('僵尸末日生存 · 第一天原型', 500, 168, 24, '#b7ccb9', 'center');
+
+    drawButton(410, 304, 180, 68, '开始', '#5e8f47', '#eafbd2', true);
+
+    ctx.fillStyle = 'rgba(0,0,0,0.45)';
+    roundRect(245, 404, 510, 104, 16, true, false);
+    ctx.fillStyle = '#f4f0dc';
+    ctx.font = '18px "Microsoft YaHei", sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('守住 1000 血的城堡。每个黑夜 1 分钟，每波 5 只僵尸。初始金币 $300。', 500, 438);
+    ctx.fillText('打完一波后 10 秒会来下一波；黑夜结束后直接进入下一天，没有白天。', 500, 468);
+    ctx.fillText('第2天跑步者，第3天死神，第5天起每5天出现终极魔王。', 500, 496);
+  }
+
+  function drawMenuZombies() {
+    const t = game.time;
+    const configs = [
+      [120, 310, 1.35], [220, 260, 1.05], [318, 320, 0.92], [680, 315, 1.0],
+      [790, 255, 1.2], [890, 330, 0.95], [500, 242, 0.9], [80, 455, 1.15], [920, 460, 1.1]
+    ];
+    for (let i = 0; i < configs.length; i++) {
+      const [x, y, s] = configs[i];
+      drawBlockZombie(x, y + Math.sin(t * 1.5 + i) * 5, s, { lookX: 500, lookY: 338 });
+    }
+  }
+
+  function drawIntro() {
+    drawNightBackground();
+    drawStars();
+    const t = game.introTime;
+    const shake = t > 1.0 && t < 3.6 ? Math.sin(t * 36) * 8 : 0;
+
+    // 城堡外景
+    drawMoon(830, 90);
+    drawDistantTrees();
+    drawCastle(game.castle.x + 330 + shake, game.castle.y - 70, 220, 260, 1000, 1000, true);
+    drawGround();
+
+    ctx.save();
+    ctx.globalAlpha = clamp((t - 0.4) / 1.2, 0, 1);
+    drawPixelText('外面的城堡开始晃动……', 500, 88, 30, '#f7edca', 'center');
+    ctx.restore();
+
+    if (t > 1.5) {
+      const count = Math.floor(clamp((t - 1.5) * 4, 0, 9));
+      for (let i = 0; i < count; i++) {
+        const x = 295 + i * 55 + Math.sin(t * 3 + i) * 5;
+        const y = 428 + Math.sin(t * 4 + i) * 4;
+        drawBlockZombie(x, y, 0.92, { lookX: 500, lookY: 250 });
+      }
+      drawPixelText('一群方块僵尸出现了！', 500, 540, 28, '#c5ffb5', 'center');
+    }
+
+    if (t > 3.9) {
+      ctx.fillStyle = 'rgba(0,0,0,' + clamp((t - 3.9) / 0.8, 0, 1) + ')';
+      ctx.fillRect(0, 0, W, H);
+      ctx.globalAlpha = clamp((t - 4.2) / 0.6, 0, 1);
+      drawPixelText('DAY 1', 500, 300, 64, '#f6c453', 'center');
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  function drawGameWorld() {
+    drawDayBackground();
+    drawPath();
+    drawPlots();
+    drawCastle(game.castle.x, game.castle.y, game.castle.w, game.castle.h, game.castle.hp, game.castle.maxHp, false);
+    drawWitch();
+    drawGhostWarning();
+    drawBossAttacks();
+
+    // draw range for selected tower
+    if (game.selectedTower) {
+      ctx.save();
+      ctx.strokeStyle = 'rgba(246,196,83,0.32)';
+      ctx.lineWidth = 2;
+      ctx.setLineDash([8, 8]);
+      ctx.beginPath();
+      ctx.arc(game.selectedTower.x, game.selectedTower.y, game.selectedTower.range, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    for (const t of game.towers) drawTower(t);
+    for (const g of game.guards) drawGuard(g);
+    for (const z of game.zombies) drawZombieActor(z);
+    for (const b of game.bullets) drawBullet(b);
+    for (const m of game.magicBalls) drawMagicBall(m);
+  }
+
+  function drawDayBackground() {
+    const grd = ctx.createLinearGradient(0, 0, 0, H);
+    grd.addColorStop(0, '#24364b');
+    grd.addColorStop(0.45, '#375332');
+    grd.addColorStop(1, '#26351e');
+    ctx.fillStyle = grd;
+    ctx.fillRect(0, 0, W, H);
+
+    // grass texture
+    for (let i = 0; i < 180; i++) {
+      const x = (i * 73 + 31) % W;
+      const y = 88 + ((i * 137) % (H - 98));
+      ctx.fillStyle = i % 3 === 0 ? 'rgba(113,162,73,0.20)' : 'rgba(68,122,54,0.18)';
+      ctx.fillRect(x, y, 3, 10);
+    }
+  }
+
+  function drawNightBackground() {
+    const grd = ctx.createLinearGradient(0, 0, 0, H);
+    grd.addColorStop(0, '#101927');
+    grd.addColorStop(0.55, '#161d22');
+    grd.addColorStop(1, '#0c1110');
+    ctx.fillStyle = grd;
+    ctx.fillRect(0, 0, W, H);
+  }
+
+  function drawStars() {
+    ctx.fillStyle = 'rgba(255,255,220,0.75)';
+    for (let i = 0; i < 70; i++) {
+      const x = (i * 97 + 17) % W;
+      const y = (i * 53 + 21) % 230;
+      const a = 0.35 + 0.4 * Math.sin(game.time * 2 + i);
+      ctx.globalAlpha = a;
+      ctx.fillRect(x, y, i % 4 === 0 ? 3 : 2, i % 5 === 0 ? 3 : 2);
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function drawMoon(x, y) {
+    ctx.fillStyle = '#f2e9b8';
+    ctx.beginPath();
+    ctx.arc(x, y, 44, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#101927';
+    ctx.beginPath();
+    ctx.arc(x + 18, y - 5, 44, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  function drawDistantTrees() {
+    for (let i = 0; i < 20; i++) {
+      const x = i * 58 - 20;
+      const h = 50 + (i % 4) * 15;
+      ctx.fillStyle = '#0b1510';
+      ctx.fillRect(x + 18, 430 - h, 16, h);
+      ctx.fillStyle = '#102419';
+      ctx.beginPath();
+      ctx.moveTo(x, 430 - h + 15);
+      ctx.lineTo(x + 26, 330 - h);
+      ctx.lineTo(x + 58, 430 - h + 15);
+      ctx.closePath();
+      ctx.fill();
+    }
+  }
+
+  function drawGround() {
+    ctx.fillStyle = '#24351e';
+    ctx.fillRect(0, 452, W, 168);
+    ctx.fillStyle = '#423324';
+    ctx.fillRect(260, 492, 480, 44);
+  }
+
+  function drawPath() {
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+    ctx.strokeStyle = '#6f5b3a';
+    ctx.lineWidth = 64;
+    ctx.beginPath();
+    ctx.moveTo(path[0].x, path[0].y);
+    for (let i = 1; i < path.length; i++) ctx.lineTo(path[i].x, path[i].y);
+    ctx.stroke();
+
+    ctx.strokeStyle = '#90764c';
+    ctx.lineWidth = 46;
+    ctx.beginPath();
+    ctx.moveTo(path[0].x, path[0].y);
+    for (let i = 1; i < path.length; i++) ctx.lineTo(path[i].x, path[i].y);
+    ctx.stroke();
+
+    ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([10, 18]);
+    ctx.beginPath();
+    ctx.moveTo(path[0].x, path[0].y);
+    for (let i = 1; i < path.length; i++) ctx.lineTo(path[i].x, path[i].y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // arrow direction
+    for (let p = 90; p < pathData.total - 100; p += 120) {
+      const pos = getPointOnPath(p);
+      drawArrow(pos.x, pos.y, pos.angle, 'rgba(40,28,18,0.35)');
+    }
+  }
+
+  function drawArrow(x, y, angle, color) {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(angle);
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.moveTo(18, 0);
+    ctx.lineTo(-8, -10);
+    ctx.lineTo(-4, 0);
+    ctx.lineTo(-8, 10);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
+
+  function drawPlots() {
+    for (const p of game.plots) {
+      ctx.save();
+      const hover = dist(game.mouse.x, game.mouse.y, p.x, p.y) < p.r + 5;
+      if (!p.unlocked) {
+        ctx.fillStyle = hover ? '#4f9a48' : '#397b35';
+        ctx.strokeStyle = '#245623';
+        ctx.lineWidth = 4;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = 'rgba(20,45,20,0.6)';
+        for (let i = 0; i < 12; i++) {
+          const a = i * Math.PI * 2 / 12;
+          ctx.fillRect(p.x + Math.cos(a) * 19 - 2, p.y + Math.sin(a) * 19 - 7, 4, 14);
+        }
+        ctx.fillStyle = '#fff6b2';
+        ctx.font = 'bold 14px "Microsoft YaHei"';
+        ctx.textAlign = 'center';
+        ctx.fillText('$' + rules.unlockGrassCost, p.x, p.y + 5);
+      } else {
+        ctx.fillStyle = p.tower ? 'rgba(90,70,50,0.2)' : (hover ? '#9a7745' : '#7d5f38');
+        ctx.strokeStyle = hover ? '#f6c453' : '#3d2b19';
+        ctx.lineWidth = 4;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        if (!p.tower) {
+          ctx.fillStyle = '#fff2c0';
+          ctx.font = 'bold 13px "Microsoft YaHei"';
+          ctx.textAlign = 'center';
+          ctx.fillText('建炮台', p.x, p.y - 5);
+          ctx.fillText('$' + rules.towerCost, p.x, p.y + 15);
+        }
+      }
+      if (game.selectedPlot === p) {
+        ctx.strokeStyle = '#f6e27a';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.r + 7, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+  }
+
+  function drawCastle(x, y, w, h, hp, maxHp, intro = false) {
+    ctx.save();
+    const scaleX = w / 132;
+    const scaleY = h / 280;
+    ctx.translate(x, y);
+    ctx.scale(scaleX, scaleY);
+
+    // wall shadow
+    ctx.fillStyle = '#2b2f34';
+    ctx.fillRect(8, 60, 116, 202);
+    ctx.fillStyle = '#5b616a';
+    ctx.fillRect(0, 72, 132, 190);
+    ctx.fillStyle = '#737b86';
+    for (let r = 0; r < 8; r++) {
+      for (let c = 0; c < 5; c++) {
+        ctx.fillRect(8 + c * 25 + (r % 2) * 10, 82 + r * 22, 18, 12);
+      }
+    }
+    // towers
+    ctx.fillStyle = '#4f5661';
+    ctx.fillRect(0, 36, 34, 226);
+    ctx.fillRect(98, 36, 34, 226);
+    ctx.fillStyle = '#6c7580';
+    ctx.fillRect(-5, 28, 44, 22);
+    ctx.fillRect(93, 28, 44, 22);
+    for (let i = 0; i < 3; i++) {
+      ctx.fillRect(i * 14, 10, 10, 28);
+      ctx.fillRect(98 + i * 14, 10, 10, 28);
+    }
+    // gate
+    ctx.fillStyle = '#2b1d15';
+    ctx.fillRect(47, 178, 38, 84);
+    ctx.fillStyle = '#3e2819';
+    ctx.beginPath();
+    ctx.arc(66, 179, 19, Math.PI, 0);
+    ctx.fill();
+    ctx.fillStyle = '#1c1410';
+    ctx.fillRect(63, 182, 6, 80);
+
+    // cracks for intro/game damage
+    const damageRatio = 1 - hp / maxHp;
+    ctx.strokeStyle = intro ? '#20242a' : 'rgba(50,35,25,0.55)';
+    ctx.lineWidth = 3;
+    if (intro || damageRatio > 0.15) {
+      ctx.beginPath();
+      ctx.moveTo(82, 95); ctx.lineTo(72, 120); ctx.lineTo(88, 147); ctx.lineTo(79, 170);
+      ctx.stroke();
+    }
+    if (damageRatio > 0.45) {
+      ctx.beginPath();
+      ctx.moveTo(30, 130); ctx.lineTo(42, 150); ctx.lineTo(35, 186); ctx.stroke();
+    }
+
+    ctx.restore();
+
+    if (!intro) {
+      drawHealthBar(x + 8, y - 28, w - 16, 14, hp, maxHp, '城堡 HP ' + Math.ceil(hp) + '/' + maxHp, '#e45d5d');
+    }
+  }
+
+
+  function drawWitch() {
+    const p = witchPosition();
+    ctx.save();
+    const bob = Math.sin(game.time * 3) * 2;
+    const casting = game.witch.casting > 0;
+    ctx.translate(p.x, p.y + bob);
+
+    // 魔法范围淡淡显示，告诉玩家女巫会守城。
+    ctx.globalAlpha = 0.06;
+    ctx.fillStyle = '#dca6ff';
+    ctx.beginPath();
+    ctx.arc(0, 30, rules.witchRange, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+
+    // 帽子
+    ctx.fillStyle = '#34204b';
+    ctx.beginPath();
+    ctx.moveTo(-24, -6);
+    ctx.lineTo(0, -58);
+    ctx.lineTo(24, -6);
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle = '#7a4ca8';
+    ctx.fillRect(-27, -8, 54, 8);
+    ctx.fillStyle = '#f6c453';
+    ctx.fillRect(-6, -24, 12, 7);
+
+    // 頭、身體
+    ctx.fillStyle = '#f0c6a0';
+    ctx.fillRect(-12, -4, 24, 22);
+    ctx.fillStyle = '#472463';
+    ctx.fillRect(-18, 18, 36, 38);
+    ctx.fillStyle = '#6f3c98';
+    ctx.fillRect(-12, 26, 24, 25);
+
+    // 眼睛
+    ctx.fillStyle = '#111';
+    ctx.fillRect(-7, 5, 4, 4);
+    ctx.fillRect(4, 5, 4, 4);
+
+    // 魔法棒
+    const wandAngle = casting ? -0.72 : -0.35;
+    ctx.save();
+    ctx.translate(17, 22);
+    ctx.rotate(wandAngle);
+    ctx.strokeStyle = '#d8aa63';
+    ctx.lineWidth = 5;
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.lineTo(48, 0);
+    ctx.stroke();
+    ctx.fillStyle = casting ? '#fff2ff' : '#dca6ff';
+    ctx.beginPath();
+    ctx.arc(53, 0, casting ? 9 : 6, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+
+    ctx.font = 'bold 13px "Microsoft YaHei"';
+    ctx.textAlign = 'center';
+    ctx.strokeStyle = 'rgba(0,0,0,0.8)';
+    ctx.lineWidth = 3;
+    ctx.strokeText('女巫守護者', 0, -68);
+    ctx.fillStyle = '#f2c2ff';
+    ctx.fillText('女巫守護者', 0, -68);
+    ctx.restore();
+  }
+
+  function drawMagicBall(m) {
+    ctx.save();
+    const pulse = 1 + Math.sin(game.time * 12) * 0.16;
+    ctx.fillStyle = '#f8ddff';
+    ctx.beginPath();
+    ctx.arc(m.x, m.y, 9 * pulse, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = 0.42;
+    ctx.strokeStyle = '#dca6ff';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(m.x, m.y, m.radius, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.globalAlpha = 0.75;
+    ctx.fillStyle = '#dca6ff';
+    ctx.beginPath();
+    ctx.arc(m.x, m.y, 16 * pulse, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  function drawBuildPhaseBanner() {
+    ctx.save();
+    ctx.fillStyle = 'rgba(255, 238, 166, 0.15)';
+    ctx.strokeStyle = 'rgba(255, 241, 177, 0.75)';
+    ctx.lineWidth = 3;
+    roundRect(320, 100, 360, 64, 16, true, true);
+    ctx.fillStyle = '#fff4b8';
+    ctx.font = 'bold 22px "Microsoft YaHei"';
+    ctx.textAlign = 'center';
+    ctx.fillText('没有白天：黑夜结束会直接进入下一天', 500, 127);
+    ctx.font = '16px "Microsoft YaHei"';
+    ctx.fillText('剩余 ' + formatTime(game.phaseTimer) + '，下一天黑夜会直接开始', 500, 151);
+    ctx.restore();
+  }
+
+  function drawGhostWarning() {
+    if (isUltimateBossDay(game.day) || hasUltimateBossAlive()) return;
+    if (!game.wave || game.wave.finished || game.phase !== 'night') return;
+    const remaining = game.wave.total - game.wave.spawned;
+    const spawn = path[0];
+    const nextIn = Math.max(0, game.wave.spawnTimer || 0);
+    const warning = nextIn > 0 && nextIn <= (game.wave.warningDuration || 1.7);
+    const pulse = 1 + Math.sin(game.time * 5) * 0.08;
+
+    ctx.save();
+    ctx.globalAlpha = warning ? 0.78 + Math.sin(game.time * 8) * 0.18 : 0.45 + Math.sin(game.time * 4) * 0.12;
+
+    // 入口的幽灵圈圈：告诉玩家僵尸会从这里沿路慢慢走过来。
+    ctx.translate(spawn.x, spawn.y - 72);
+    ctx.scale(pulse, pulse);
+    ctx.strokeStyle = warning ? '#fff8b8' : '#dff7ff';
+    ctx.fillStyle = warning ? 'rgba(255, 245, 140, 0.16)' : 'rgba(170, 230, 255, 0.16)';
+    ctx.lineWidth = warning ? 5 : 4;
+    ctx.beginPath();
+    ctx.arc(0, 0, 32, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    drawGhostIcon(0, 0, 0.82);
+    ctx.restore();
+
+    // 指向路线的箭头。
+    const p1 = getPointOnPath(22 + Math.sin(game.time * 2) * 8);
+    const p2 = getPointOnPath(88 + Math.sin(game.time * 2) * 8);
+    drawBigGhostArrow(p1.x, p1.y - 42, p2.x, p2.y - 42, warning);
+
+    // 五个小幽灵点，表示这一波最多 5 只。
+    for (let i = 0; i < game.wave.total; i++) {
+      const active = i >= game.wave.spawned;
+      const gx = spawn.x - 56 + i * 28;
+      const gy = spawn.y - 132;
+      ctx.save();
+      ctx.globalAlpha = active ? 0.82 : 0.22;
+      ctx.fillStyle = active ? 'rgba(225,245,255,0.86)' : 'rgba(225,245,255,0.28)';
+      ctx.strokeStyle = active ? '#dff7ff' : 'rgba(223,247,255,0.35)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(gx, gy + Math.sin(game.time * 3 + i) * 2, 10, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    ctx.fillStyle = '#e8fbff';
+    ctx.font = 'bold 17px "Microsoft YaHei"';
+    ctx.textAlign = 'center';
+    ctx.fillText('幽灵预告：僵尸入口', spawn.x, spawn.y - 168);
+    ctx.fillText('第 ' + game.day + ' 天 · 第 ' + (game.waveNumber + 1) + ' 波：5 只，剩余 ' + remaining + ' 只', spawn.x, spawn.y - 24);
+    if (warning && remaining > 0) {
+      ctx.fillStyle = '#fff4a8';
+      ctx.font = 'bold 16px "Microsoft YaHei"';
+      ctx.fillText('下一只马上出现！', spawn.x, spawn.y - 48);
+    }
+  }
+
+  function drawBigGhostArrow(x1, y1, x2, y2, warning) {
+    const a = Math.atan2(y2 - y1, x2 - x1);
+    const len = dist(x1, y1, x2, y2);
+    ctx.save();
+    ctx.translate(x1, y1);
+    ctx.rotate(a);
+    ctx.strokeStyle = warning ? 'rgba(255,248,184,0.95)' : 'rgba(216,247,255,0.62)';
+    ctx.fillStyle = warning ? 'rgba(255,248,184,0.95)' : 'rgba(216,247,255,0.62)';
+    ctx.lineWidth = warning ? 6 : 4;
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.lineTo(len, 0);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(len + 14, 0);
+    ctx.lineTo(len - 8, -11);
+    ctx.lineTo(len - 4, 0);
+    ctx.lineTo(len - 8, 11);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
+
+  function drawGhostIcon(x, y, s) {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.scale(s, s);
+    ctx.fillStyle = 'rgba(225,245,255,0.85)';
+    ctx.beginPath();
+    ctx.arc(0, -4, 23, Math.PI, 0);
+    ctx.lineTo(23, 22);
+    ctx.lineTo(12, 14);
+    ctx.lineTo(4, 22);
+    ctx.lineTo(-5, 14);
+    ctx.lineTo(-15, 22);
+    ctx.lineTo(-23, 14);
+    ctx.lineTo(-23, -4);
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle = '#1b2d36';
+    ctx.fillRect(-11, -5, 6, 8);
+    ctx.fillRect(7, -5, 6, 8);
+    ctx.restore();
+  }
+
+  function drawBossAttacks() {
+    ctx.save();
+    for (const a of game.bossAttacks) {
+      const warning = !a.applied;
+      const p = warning ? clamp(a.timer / a.maxTimer, 0, 1) : 0;
+      const pulse = 1 + Math.sin(game.time * 18) * 0.04;
+      ctx.globalAlpha = warning ? 0.35 + (1 - p) * 0.35 : 0.22;
+      ctx.fillStyle = warning ? 'rgba(255, 50, 50, 0.38)' : 'rgba(255, 150, 80, 0.26)';
+      ctx.strokeStyle = warning ? '#ff5a5a' : '#ffd1a1';
+      ctx.lineWidth = warning ? 5 : 3;
+      ctx.beginPath();
+      ctx.arc(a.x, a.y, a.r * pulse, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.globalAlpha = 0.8;
+      ctx.strokeStyle = '#ffb3b3';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(a.x - 14, a.y - a.r + 18);
+      ctx.lineTo(a.x + 14, a.y + a.r - 18);
+      ctx.moveTo(a.x + 14, a.y - a.r + 18);
+      ctx.lineTo(a.x - 14, a.y + a.r - 18);
+      ctx.stroke();
+    }
+    ctx.restore();
+    ctx.globalAlpha = 1;
+  }
+
+  function drawZombieSoul(x, y, timer) {
+    const p = clamp(1 - timer / 0.62, 0, 1);
+    const pulse = 1 + Math.sin(game.time * 16) * 0.08;
+    ctx.save();
+    ctx.globalAlpha = 0.82;
+    ctx.translate(x, y);
+    ctx.scale(pulse, pulse);
+    ctx.strokeStyle = '#dff7ff';
+    ctx.fillStyle = 'rgba(225,245,255,0.16)';
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.arc(0, 0, 34, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    drawGhostIcon(0, 0, 0.72 + p * 0.2);
+    ctx.restore();
+
+    ctx.save();
+    ctx.globalAlpha = p;
+    drawBlockZombie(x, y + 22, 0.54 + p * 0.18, { lookX: game.castle.x, lookY: game.castle.y + game.castle.h / 2 });
+    ctx.restore();
+  }
+
+  function drawZombieActor(z) {
+    const isBoss = z.colorMode === 'ultimate';
+    if (z.materializeTimer > 0) {
+      drawZombieSoul(z.x, z.y - 22, z.materializeTimer);
+    } else if (isBoss) {
+      drawUltimateBoss(z);
+    } else {
+      drawBlockZombie(z.x, z.y, 0.72, { lookX: game.castle.x, lookY: game.castle.y + game.castle.h / 2, slow: z.slowTimer > 0, burn: z.burnTimer > 0, charging: z.chargeTimer > 0, fast: z.colorMode === 'fast', reaper: z.colorMode === 'reaper', reflect: z.colorMode === 'reflect' });
+    }
+
+    if (z.colorMode === 'fast') drawEnemyLabel('跑步者', z.x, z.y - 82, '#ffd18a');
+    if (z.colorMode === 'reaper') drawEnemyLabel('死神 · 3秒传送', z.x, z.y - 82, '#d9b7ff');
+    if (isBoss) {
+      const cd = Math.max(0, Math.ceil(z.bossAttackTimer || 0));
+      drawEnemyLabel('终极魔王 · 三叉戟 ' + cd + '秒', z.x, z.y - 116, '#ff9a9a');
+    }
+
+    const barW = isBoss ? 104 : 58;
+    const barY = isBoss ? z.y - 100 : z.y - 66;
+    const barColor = isBoss ? '#ff5a5a' : (z.colorMode === 'reflect' ? '#57e1ff' : (z.colorMode === 'reaper' ? '#b58cff' : (z.colorMode === 'fast' ? '#ff9d4d' : '#e45d5d')));
+    drawHealthBar(z.x - barW / 2, barY, barW, 8, z.hp, z.maxHp, '', barColor);
+    ctx.fillStyle = '#f7f0d8';
+    ctx.font = isBoss ? 'bold 12px "Microsoft YaHei"' : '11px "Microsoft YaHei"';
+    ctx.textAlign = 'center';
+    ctx.fillText(Math.ceil(z.hp) + '/' + z.maxHp, z.x, barY - 4);
+  }
+
+  function drawEnemyLabel(text, x, y, color) {
+    ctx.fillStyle = color;
+    ctx.font = 'bold 11px "Microsoft YaHei"';
+    ctx.textAlign = 'center';
+    ctx.fillText(text, x, y);
+  }
+
+  function drawBlockZombie(x, y, s = 1, opts = {}) {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.scale(s, s);
+
+    const bob = Math.sin(game.time * 7 + x * 0.01) * 2;
+    ctx.translate(0, bob);
+
+    // shadow
+    ctx.fillStyle = 'rgba(0,0,0,0.32)';
+    ctx.fillRect(-28, 35, 56, 10);
+
+    const skin = opts.reaper ? '#cdb6ff' : (opts.reflect ? '#74e7ff' : (opts.slow ? '#7fc6bd' : (opts.fast ? '#76d982' : '#5fbf75')));
+    const skinDark = opts.reaper ? '#7c5cc4' : (opts.reflect ? '#249cb8' : (opts.slow ? '#579f9a' : (opts.fast ? '#459c55' : '#3d8e52')));
+    const shirt = opts.reaper ? '#29203f' : (opts.reflect ? '#1e4a5d' : (opts.burn ? '#7b4a2e' : (opts.fast ? '#8b3f3f' : '#2d6f7e')));
+    const pants = '#263a78';
+
+    // legs - 走路时两条腿会轻微摆动。
+    const runKick = Math.sin(game.time * 7 + x * 0.03) * 3;
+    ctx.fillStyle = pants;
+    ctx.fillRect(-18, 18 + Math.max(0, runKick), 14, 30);
+    ctx.fillRect(4, 18 + Math.max(0, -runKick), 14, 30);
+    ctx.fillStyle = '#1c2b5a';
+    ctx.fillRect(-18, 42, 14, 6);
+    ctx.fillRect(4, 42, 14, 6);
+
+    // body
+    ctx.fillStyle = shirt;
+    ctx.fillRect(-24, -28, 48, 50);
+    ctx.fillStyle = '#1c4c59';
+    ctx.fillRect(-24, 12, 48, 10);
+
+    // arms out
+    const armLift = Math.sin(game.time * 6 + x * 0.02) * 2;
+    ctx.fillStyle = skin;
+    ctx.fillRect(-48, -24 + armLift, 22, 14);
+    ctx.fillRect(26, -24 - armLift, 22, 14);
+    ctx.fillStyle = skinDark;
+    ctx.fillRect(-48, -10 + armLift, 22, 10);
+    ctx.fillRect(26, -10 - armLift, 22, 10);
+
+    // head
+    ctx.fillStyle = skin;
+    ctx.fillRect(-24, -68, 48, 42);
+    ctx.fillStyle = skinDark;
+    ctx.fillRect(-24, -34, 48, 8);
+
+    // eyes look toward target
+    let eyeShiftX = 0;
+    if (opts.lookX !== undefined) eyeShiftX = clamp((opts.lookX - x) / 250, -3, 3);
+    ctx.fillStyle = '#111827';
+    ctx.fillRect(-13 + eyeShiftX, -55, 8, 8);
+    ctx.fillRect(8 + eyeShiftX, -55, 8, 8);
+    ctx.fillStyle = '#1b3d24';
+    ctx.fillRect(-10, -40, 20, 5);
+
+    // pixel highlights
+    ctx.fillStyle = 'rgba(255,255,255,0.10)';
+    ctx.fillRect(-20, -64, 10, 8);
+    ctx.fillRect(-18, -24, 12, 32);
+
+    if (opts.burn) {
+      ctx.fillStyle = 'rgba(255,100,30,0.75)';
+      ctx.fillRect(-30 + rand(-1,1), -40 + rand(-1,1), 8, 22);
+      ctx.fillRect(22 + rand(-1,1), -18 + rand(-1,1), 7, 20);
+    }
+
+    if (opts.reflect) {
+      ctx.strokeStyle = 'rgba(135,246,255,0.8)';
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.arc(0, -18, 54 + Math.sin(game.time * 6) * 3, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.fillStyle = 'rgba(135,246,255,0.18)';
+      ctx.fillRect(-31, -75, 62, 126);
+      ctx.fillStyle = '#d9fbff';
+      ctx.font = 'bold 16px "Microsoft YaHei"';
+      ctx.textAlign = 'center';
+      ctx.fillText('⚡', 0, -82);
+    }
+
+    ctx.restore();
+  }
+
+  function drawUltimateBoss(z) {
+    const x = z.x, y = z.y;
+    ctx.save();
+    ctx.translate(x, y);
+    const bob = Math.sin(game.time * 3 + x * 0.01) * 1.4;
+    ctx.translate(0, bob);
+
+    ctx.fillStyle = 'rgba(0,0,0,0.45)';
+    ctx.fillRect(-44, 44, 88, 13);
+
+    ctx.fillStyle = '#2b213d';
+    ctx.fillRect(-26, 16, 20, 42);
+    ctx.fillRect(6, 16, 20, 42);
+    ctx.fillStyle = '#171220';
+    ctx.fillRect(-30, 50, 28, 8);
+    ctx.fillRect(2, 50, 28, 8);
+
+    ctx.fillStyle = '#441d2a';
+    ctx.fillRect(-36, -42, 72, 64);
+    ctx.fillStyle = '#7b2632';
+    ctx.fillRect(-30, -34, 60, 16);
+    ctx.fillStyle = '#211425';
+    ctx.fillRect(-36, 8, 72, 14);
+    ctx.fillStyle = '#ffcc66';
+    ctx.fillRect(-7, -33, 14, 48);
+
+    ctx.fillStyle = '#7b2632';
+    ctx.fillRect(-62, -34, 24, 18);
+    ctx.fillRect(38, -34, 24, 18);
+    ctx.fillStyle = '#3b1020';
+    ctx.fillRect(-66, -17, 22, 17);
+    ctx.fillRect(44, -17, 22, 17);
+
+    ctx.fillStyle = '#6c2030';
+    ctx.fillRect(-28, -88, 56, 48);
+    ctx.fillStyle = '#3b1020';
+    ctx.fillRect(-28, -48, 56, 8);
+
+    ctx.fillStyle = '#e8dcc2';
+    ctx.beginPath();
+    ctx.moveTo(-25, -86); ctx.lineTo(-52, -110); ctx.lineTo(-34, -78); ctx.closePath();
+    ctx.moveTo(25, -86); ctx.lineTo(52, -110); ctx.lineTo(34, -78); ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle = '#b99a6a';
+    ctx.fillRect(-43, -97, 8, 10);
+    ctx.fillRect(35, -97, 8, 10);
+
+    ctx.fillStyle = '#ffe36e';
+    ctx.fillRect(-17, -70, 10, 8);
+    ctx.fillRect(7, -70, 10, 8);
+    ctx.fillStyle = '#16090c';
+    ctx.fillRect(-15, -56, 30, 6);
+
+    ctx.strokeStyle = '#e9f3ff';
+    ctx.lineWidth = 5;
+    ctx.beginPath();
+    ctx.moveTo(62, -96);
+    ctx.lineTo(58, 42);
+    ctx.stroke();
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.moveTo(42, -94); ctx.lineTo(62, -116); ctx.lineTo(82, -94);
+    ctx.moveTo(62, -116); ctx.lineTo(62, -82);
+    ctx.moveTo(42, -94); ctx.lineTo(42, -74);
+    ctx.moveTo(82, -94); ctx.lineTo(82, -74);
+    ctx.stroke();
+
+    if (z.burnTimer > 0) {
+      ctx.fillStyle = 'rgba(255,90,30,0.72)';
+      ctx.fillRect(-44 + rand(-1,1), -50, 10, 28);
+      ctx.fillRect(34 + rand(-1,1), -28, 10, 24);
+    }
+
+    ctx.restore();
+  }
+
+  function drawTower(t) {
+    ctx.save();
+    ctx.translate(t.x, t.y);
+
+    // base
+    ctx.fillStyle = '#3b3022';
+    ctx.fillRect(-24, 10, 48, 22);
+    ctx.fillStyle = '#675039';
+    ctx.fillRect(-18, -10, 36, 26);
+    ctx.fillStyle = '#82705a';
+    ctx.fillRect(-13, -34, 26, 28);
+
+    // barrel
+    const target = nearestZombie(t.x, t.y, t.range);
+    let angle = -Math.PI / 2;
+    if (target) angle = Math.atan2(target.y - t.y, target.x - t.x);
+    ctx.save();
+    ctx.rotate(angle);
+    ctx.fillStyle = elementColor(t.element);
+    ctx.fillRect(0, -5, 36, 10);
+    ctx.fillStyle = '#1d2226';
+    ctx.fillRect(29, -7, 10, 14);
+    ctx.restore();
+
+    ctx.fillStyle = '#1d2226';
+    ctx.fillRect(-9, -43, 18, 12);
+    ctx.fillStyle = '#e7d27a';
+    ctx.font = 'bold 11px "Microsoft YaHei"';
+    ctx.textAlign = 'center';
+    ctx.fillText(t.element === '普通' ? '普通' : t.element, 0, 48);
+    ctx.fillText('Lv.' + t.level, 0, 63);
+
+    ctx.restore();
+
+    // HP and gold upgrade bar
+    drawHealthBar(t.x - 30, t.y - 58, 60, 7, t.hp, t.maxHp, '', '#7ed36a');
+    drawGoldBar(t.x - 30, t.y + 70, 60, 8, t.kills, rules.towerKillsForUpgrade, t.readyUpgrade);
+
+    if (game.selectedTower === t) {
+      ctx.strokeStyle = t.readyUpgrade ? '#ffe066' : 'rgba(255,255,255,0.5)';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(t.x, t.y, 43 + Math.sin(game.time * 5) * (t.readyUpgrade ? 3 : 0), 0, Math.PI * 2);
+      ctx.stroke();
+    }
+  }
+
+  function drawGoldBar(x, y, w, h, value, max, ready) {
+    ctx.fillStyle = '#2a2418';
+    roundRect(x, y, w, h, 4, true, false);
+    ctx.fillStyle = ready ? '#fff176' : '#d4a22e';
+    roundRect(x, y, w * clamp(value / max, 0, 1), h, 4, true, false);
+    ctx.strokeStyle = ready ? '#fff8b8' : '#73551b';
+    ctx.lineWidth = 2;
+    roundRect(x, y, w, h, 4, false, true);
+    if (ready) {
+      ctx.fillStyle = '#fff8b8';
+      ctx.font = 'bold 11px "Microsoft YaHei"';
+      ctx.textAlign = 'center';
+      ctx.fillText('可升级', x + w / 2, y - 4);
+    }
+  }
+
+  function drawGuard(g) {
+    ctx.save();
+    ctx.translate(g.x, g.y);
+    ctx.fillStyle = 'rgba(0,0,0,0.28)';
+    ctx.fillRect(-20, 24, 40, 8);
+    // legs/body/head
+    ctx.fillStyle = '#374151';
+    ctx.fillRect(-12, 5, 9, 24);
+    ctx.fillRect(4, 5, 9, 24);
+    ctx.fillStyle = '#8b5e3c';
+    ctx.fillRect(-16, -24, 32, 34);
+    ctx.fillStyle = '#d9a066';
+    ctx.fillRect(-13, -52, 26, 26);
+    ctx.fillStyle = '#2f241d';
+    ctx.fillRect(-15, -58, 30, 10);
+    ctx.fillStyle = '#111827';
+    ctx.fillRect(-8, -43, 5, 5);
+    ctx.fillRect(5, -43, 5, 5);
+    // sword
+    ctx.strokeStyle = '#d9e4ef';
+    ctx.lineWidth = 5;
+    ctx.beginPath();
+    ctx.moveTo(16, -18);
+    ctx.lineTo(42, -39);
+    ctx.stroke();
+    ctx.strokeStyle = '#6b4b2f';
+    ctx.lineWidth = 5;
+    ctx.beginPath();
+    ctx.moveTo(11, -13);
+    ctx.lineTo(22, -23);
+    ctx.stroke();
+    ctx.restore();
+
+    drawHealthBar(g.x - 28, g.y - 72, 56, 8, g.hp, g.maxHp, '', '#65c7ff');
+    ctx.fillStyle = '#e5f5ff';
+    ctx.font = '11px "Microsoft YaHei"';
+    ctx.textAlign = 'center';
+    ctx.fillText('护卫 ' + Math.ceil(g.hp) + '/' + g.maxHp, g.x, g.y - 78);
+  }
+
+  function drawBullet(b) {
+    ctx.save();
+    ctx.fillStyle = elementColor(b.kind);
+    ctx.beginPath();
+    ctx.arc(b.x, b.y, b.kind === '普通' ? 3 : 4, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = 0.35;
+    ctx.strokeStyle = elementColor(b.kind);
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(b.x, b.y);
+    const a = Math.atan2(b.ty - b.y, b.tx - b.x);
+    ctx.lineTo(b.x - Math.cos(a) * 14, b.y - Math.sin(a) * 14);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function drawGameUI() {
+    game.uiButtons.length = 0;
+    game.upgradeButtons.length = 0;
+
+    ctx.fillStyle = 'rgba(12,17,23,0.88)';
+    ctx.fillRect(0, 0, W, 78);
+    ctx.strokeStyle = 'rgba(255,255,255,0.14)';
+    ctx.beginPath();
+    ctx.moveTo(0, 78); ctx.lineTo(W, 78); ctx.stroke();
+
+    drawPixelText('僵尸生存', 24, 32, 23, '#f5f0d0', 'left');
+    ctx.fillStyle = '#f6c453';
+    ctx.font = 'bold 20px "Microsoft YaHei"';
+    ctx.textAlign = 'left';
+    ctx.fillText('DAY ' + game.day, 24, 60);
+
+    const phaseName = '黑夜战斗';
+    drawHudBox(152, 13, 96, 50, '金币', '$' + game.money, '#f6c453');
+    drawHudBox(260, 13, 146, 50, '城堡', Math.ceil(game.castle.hp) + '/' + game.castle.maxHp, '#ff8a8a');
+    drawHudBox(418, 13, 138, 50, phaseName, formatTime(game.phaseTimer), '#b5d4ff');
+    drawHudBox(568, 13, 72, 50, '波数', game.wave ? ((game.waveNumber + 1) + '波') : '-', '#a8ffb2');
+    drawHudBox(820, 13, 154, 50, '女巫', '范围伤害 ' + rules.witchDamage, '#f2c2ff');
+
+    const btn = {
+      x: 650, y: 16, w: 152, h: 46,
+      onClick: summonGuard
+    };
+    game.uiButtons.push(btn);
+    drawButton(btn.x, btn.y, btn.w, btn.h, '召唤护卫 $' + rules.guardCost + ' (G)', '#3d6e88', '#e9fbff', false);
+
+    const helpBtn = {
+      x: 816, y: 16, w: 160, h: 46,
+      onClick: () => {
+        game.message = '玩法：点击草丛买开；点击开放地块建普通炮台；选中炮台可花 $500 强化；炮台击倒 10 只僵尸后金条亮起，可免费选四属性升级。';
+        game.messageTimer = 6;
+      }
+    };
+    game.uiButtons.push(helpBtn);
+    drawButton(helpBtn.x, helpBtn.y, helpBtn.w, helpBtn.h, '说明', '#6e5b3d', '#fff4cc', false);
+
+    drawBottomInfoPanel();
+    drawSelectionPanel();
+  }
+
+  function drawHudBox(x, y, w, h, label, value, color) {
+    ctx.fillStyle = 'rgba(255,255,255,0.08)';
+    roundRect(x, y, w, h, 10, true, false);
+    ctx.fillStyle = 'rgba(0,0,0,0.22)';
+    roundRect(x + 2, y + 2, w - 4, h - 4, 8, true, false);
+    ctx.fillStyle = '#bfc9d5';
+    ctx.font = '12px "Microsoft YaHei"';
+    ctx.textAlign = 'left';
+    ctx.fillText(label, x + 12, y + 18);
+    ctx.fillStyle = color;
+    ctx.font = 'bold 19px "Microsoft YaHei"';
+    ctx.fillText(value, x + 12, y + 42);
+  }
+
+  function drawBottomInfoPanel() {
+    const panelY = 528;
+    ctx.fillStyle = 'rgba(9,12,16,0.78)';
+    roundRect(14, panelY, 972, 78, 14, true, false);
+    ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+    roundRect(14, panelY, 972, 78, 14, false, true);
+
+    ctx.fillStyle = '#f4f0dc';
+    ctx.font = '15px "Microsoft YaHei"';
+    ctx.textAlign = 'left';
+    const msg = game.message || '目标：不要让城堡垮掉。每个黑夜 1 分钟持续出波，每波 5 只；没有白天，时间到直接进入下一天。';
+    wrapText(msg, 32, panelY + 28, 590, 20);
+
+    ctx.fillStyle = '#a7d5a5';
+    ctx.font = '13px "Microsoft YaHei"';
+    ctx.fillText('规则：初始金币 $300；普通炮台 $100；满级炮台击杀会把经验转给未满级炮台；第二天跑步者；第三天死神。', 32, panelY + 64);
+  }
+
+  function drawSelectionPanel() {
+    const x = 650;
+    const y = 530;
+    const w = 318;
+    const h = 72;
+    ctx.fillStyle = 'rgba(255,255,255,0.06)';
+    roundRect(x, y, w, h, 12, true, false);
+    ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+    roundRect(x, y, w, h, 12, false, true);
+
+    ctx.textAlign = 'left';
+    if (game.selectedTower) {
+      const t = game.selectedTower;
+      ctx.fillStyle = '#f6e2a0';
+      ctx.font = 'bold 15px "Microsoft YaHei"';
+      ctx.fillText('已选炮台：' + t.element + ' Lv.' + t.level, x + 12, y + 20);
+      ctx.fillStyle = '#d7dfef';
+      ctx.font = '12px "Microsoft YaHei"';
+      ctx.fillText('HP ' + Math.ceil(t.hp) + '/' + t.maxHp + '  伤害 ' + t.damage + '  强化Lv.' + t.paidLevel + '/' + rules.towerPaidUpgradeMax, x + 12, y + 40);
+      ctx.fillText('升级金条：' + t.kills + '/' + rules.towerKillsForUpgrade + '  总击倒 ' + t.totalKills, x + 12, y + 58);
+      if (!t.readyUpgrade) drawPaidUpgradeButton(x + 202, y + 19, t);
+      if (t.readyUpgrade) drawUpgradeChoices(x + 150, y + 12, t);
+    } else if (game.selectedPlot) {
+      const p = game.selectedPlot;
+      ctx.fillStyle = '#d9ffd0';
+      ctx.font = 'bold 15px "Microsoft YaHei"';
+      ctx.fillText(p.unlocked ? '已开放地块' : '草丛地块', x + 12, y + 24);
+      ctx.fillStyle = '#d7dfef';
+      ctx.font = '12px "Microsoft YaHei"';
+      ctx.fillText(p.unlocked ? '点击可建普通炮台 $100' : '点击买开草丛 $20', x + 12, y + 48);
+    } else {
+      ctx.fillStyle = '#d7dfef';
+      ctx.font = '13px "Microsoft YaHei"';
+      ctx.fillText('操作提示：', x + 12, y + 23);
+      ctx.fillText('1. 点击草丛买地', x + 12, y + 43);
+      ctx.fillText('2. 点击开放地块建炮台', x + 12, y + 61);
+    }
+  }
+
+  function drawPaidUpgradeButton(x, y, tower) {
+    const maxed = tower.paidLevel >= rules.towerPaidUpgradeMax;
+    const affordable = game.money >= rules.towerPaidUpgradeCost;
+    const btn = {
+      x, y, w: 96, h: 34,
+      onClick: () => paidUpgradeTower(tower)
+    };
+    game.upgradeButtons.push(btn);
+    let bg = maxed ? '#3b3b3b' : (affordable ? '#8a6420' : '#58442b');
+    drawButton(x, y, 96, 34, maxed ? '强化满级' : '强化 $500', bg, '#fff2bf', false);
+  }
+
+  function drawUpgradeChoices(x, y, tower) {
+    const opts = [
+      { name: '雷射', icon: '⚡', color: '#f7f27a' },
+      { name: '火焰', icon: '🔥', color: '#ff8a3d' },
+      { name: '寒冰', icon: '❄', color: '#8ad8ff' },
+      { name: '草地', icon: '🌿', color: '#79d66b' }
+    ];
+    for (let i = 0; i < opts.length; i++) {
+      const o = opts[i];
+      const bx = x + i * 40;
+      const by = y;
+      const btn = { x: bx, y: by, w: 34, h: 34, onClick: () => upgradeTower(tower, o.name) };
+      game.upgradeButtons.push(btn);
+      ctx.fillStyle = 'rgba(0,0,0,0.35)';
+      roundRect(bx, by, 34, 34, 8, true, false);
+      ctx.strokeStyle = o.color;
+      ctx.lineWidth = 2;
+      roundRect(bx, by, 34, 34, 8, false, true);
+      ctx.fillStyle = o.color;
+      ctx.font = '20px "Segoe UI Emoji", "Microsoft YaHei"';
+      ctx.textAlign = 'center';
+      ctx.fillText(o.icon, bx + 17, by + 24);
+      ctx.fillStyle = '#fff6d0';
+      ctx.font = '10px "Microsoft YaHei"';
+      ctx.fillText(o.name, bx + 17, by + 50);
+    }
+  }
+
+  function drawEndOverlay(win) {
+    ctx.save();
+    ctx.fillStyle = 'rgba(0,0,0,0.72)';
+    ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = win ? '#f6c453' : '#ff7777';
+    drawPixelText(win ? '第一天通关！' : '城堡倒塌', 500, 245, 54, win ? '#f6c453' : '#ff7777', 'center');
+    ctx.fillStyle = '#f4f0dc';
+    ctx.font = '20px "Microsoft YaHei"';
+    ctx.textAlign = 'center';
+    ctx.fillText(win ? '你守住了这一天。下一天会继续变难。' : '僵尸突破城墙，生存失败。', 500, 305);
+    ctx.fillText('最后金币：$' + game.money + '　城堡血量：' + Math.ceil(game.castle.hp) + '/' + game.castle.maxHp, 500, 338);
+    drawButton(385, 448, 230, 62, '回主页面', '#5e8f47', '#eafbd2', true);
+    ctx.restore();
+  }
+
+  function drawButton(x, y, w, h, text, bg, color, large) {
+    const hover = pointInRect(game.mouse.x, game.mouse.y, x, y, w, h);
+    ctx.save();
+    ctx.fillStyle = hover ? lighten(bg, 18) : bg;
+    roundRect(x, y, w, h, 14, true, false);
+    ctx.strokeStyle = hover ? '#fff3a8' : 'rgba(255,255,255,0.28)';
+    ctx.lineWidth = hover ? 4 : 2;
+    roundRect(x, y, w, h, 14, false, true);
+    ctx.fillStyle = color;
+    ctx.font = 'bold ' + (large ? 31 : 17) + 'px "Microsoft YaHei"';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text, x + w / 2, y + h / 2 + 1);
+    ctx.textBaseline = 'alphabetic';
+    ctx.restore();
+  }
+
+  function drawHealthBar(x, y, w, h, hp, maxHp, label, color) {
+    ctx.save();
+    ctx.fillStyle = 'rgba(0,0,0,0.55)';
+    roundRect(x, y, w, h, h / 2, true, false);
+    ctx.fillStyle = color;
+    roundRect(x, y, w * clamp(hp / maxHp, 0, 1), h, h / 2, true, false);
+    ctx.strokeStyle = 'rgba(255,255,255,0.55)';
+    ctx.lineWidth = 1;
+    roundRect(x, y, w, h, h / 2, false, true);
+    if (label) {
+      ctx.fillStyle = '#fff7d7';
+      ctx.font = 'bold 12px "Microsoft YaHei"';
+      ctx.textAlign = 'center';
+      ctx.fillText(label, x + w / 2, y + h - 2);
+    }
+    ctx.restore();
+  }
+
+  function drawPixelText(text, x, y, size, color, align) {
+    ctx.save();
+    ctx.font = '900 ' + size + 'px "Microsoft YaHei", system-ui, sans-serif';
+    ctx.textAlign = align || 'left';
+    ctx.lineWidth = Math.max(3, size / 10);
+    ctx.strokeStyle = 'rgba(0,0,0,0.78)';
+    ctx.strokeText(text, x, y);
+    ctx.fillStyle = color;
+    ctx.fillText(text, x, y);
+    ctx.restore();
+  }
+
+  function wrapText(text, x, y, maxWidth, lineHeight) {
+    const chars = String(text).split('');
+    let line = '';
+    for (const ch of chars) {
+      const test = line + ch;
+      if (ctx.measureText(test).width > maxWidth && line.length > 0) {
+        ctx.fillText(line, x, y);
+        line = ch;
+        y += lineHeight;
+      } else {
+        line = test;
+      }
+    }
+    if (line) ctx.fillText(line, x, y);
+  }
+
+  function addSlash(x, y) {
+    for (let i = 0; i < 4; i++) addParticle(x + rand(-12, 12), y + rand(-12, 12), rand(-40, 40), rand(-50, 20), '#f2f2f2', 0.22, 2);
+  }
+
+  function burstZombie(x, y, mode = 'normal') {
+    const count = mode === 'ultimate' ? 46 : 20;
+    const c1 = mode === 'ultimate' ? '#ff5a5a' : (mode === 'reaper' ? '#b58cff' : '#5fbf75');
+    const c2 = mode === 'ultimate' ? '#ffd36b' : (mode === 'reaper' ? '#2d214d' : '#2d6f7e');
+    for (let i = 0; i < count; i++) addParticle(x + rand(-20, 20), y + rand(-45, 28), rand(-95, 95), rand(-110, 50), i % 2 ? c1 : c2, 0.85, rand(2, 6));
+  }
+
+  function addParticle(x, y, vx, vy, color, life, size) {
+    game.particles.push({ x, y, vx, vy, color, life, maxLife: life, size });
+  }
+
+  function updateParticles(dt) {
+    for (const p of game.particles) {
+      p.life -= dt;
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+      p.vy += 70 * dt;
+    }
+    game.particles = game.particles.filter(p => p.life > 0);
+  }
+
+  function drawParticles() {
+    ctx.save();
+    for (const p of game.particles) {
+      ctx.globalAlpha = clamp(p.life / p.maxLife, 0, 1);
+      ctx.fillStyle = p.color;
+      ctx.fillRect(p.x, p.y, p.size, p.size);
+    }
+    ctx.restore();
+    ctx.globalAlpha = 1;
+  }
+
+  function showFloat(text, x, y, color) {
+    game.floatTexts.push({ text, x, y, vy: -34, life: 1.35, maxLife: 1.35, color });
+  }
+
+  function updateFloatTexts(dt) {
+    for (const f of game.floatTexts) {
+      f.life -= dt;
+      f.y += f.vy * dt;
+    }
+    game.floatTexts = game.floatTexts.filter(f => f.life > 0);
+  }
+
+  function drawFloatTexts() {
+    ctx.save();
+    ctx.font = 'bold 16px "Microsoft YaHei"';
+    ctx.textAlign = 'center';
+    for (const f of game.floatTexts) {
+      ctx.globalAlpha = clamp(f.life / f.maxLife, 0, 1);
+      ctx.strokeStyle = 'rgba(0,0,0,0.7)';
+      ctx.lineWidth = 3;
+      ctx.strokeText(f.text, f.x, f.y);
+      ctx.fillStyle = f.color;
+      ctx.fillText(f.text, f.x, f.y);
+    }
+    ctx.restore();
+    ctx.globalAlpha = 1;
+  }
+
+  function formatTime(seconds) {
+    const s = Math.max(0, Math.ceil(seconds));
+    const m = Math.floor(s / 60);
+    const r = String(s % 60).padStart(2, '0');
+    return m + ':' + r;
+  }
+
+  function isZombieImmuneToElement(z, kind) {
+    if (!z || !z.immuneElements || !kind || kind === '女巫魔法') return false;
+    return z.immuneElements.includes(kind);
+  }
+
+  function elementColor(kind) {
+    switch (kind) {
+      case '雷射': return '#f7f27a';
+      case '火焰': return '#ff8a3d';
+      case '寒冰': return '#8ad8ff';
+      case '草地': return '#79d66b';
+      case '女巫魔法': return '#dca6ff';
+      default: return '#f0e1a1';
+    }
+  }
+
+  function lighten(hex, amount) {
+    const c = hex.replace('#', '');
+    const num = parseInt(c, 16);
+    let r = (num >> 16) + amount;
+    let g = ((num >> 8) & 0xff) + amount;
+    let b = (num & 0xff) + amount;
+    r = clamp(Math.round(r), 0, 255);
+    g = clamp(Math.round(g), 0, 255);
+    b = clamp(Math.round(b), 0, 255);
+    return '#' + (r << 16 | g << 8 | b).toString(16).padStart(6, '0');
+  }
+
+  function roundRect(x, y, w, h, r, fill, stroke) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+    if (fill) ctx.fill();
+    if (stroke) ctx.stroke();
+  }
+
+  function pointInRect(px, py, x, y, w, h) {
+    return px >= x && px <= x + w && py >= y && py <= y + h;
+  }
+
+  function circleRectOverlap(cx, cy, r, rx, ry, rw, rh) {
+    const closestX = clamp(cx, rx, rx + rw);
+    const closestY = clamp(cy, ry, ry + rh);
+    return dist(cx, cy, closestX, closestY) <= r;
+  }
+
+  function dist(x1, y1, x2, y2) {
+    return Math.hypot(x2 - x1, y2 - y1);
+  }
+
+  function clamp(v, min, max) {
+    return Math.max(min, Math.min(max, v));
+  }
+
+  function lerp(a, b, t) {
+    return a + (b - a) * t;
+  }
+
+  function rand(min, max) {
+    return Math.random() * (max - min) + min;
+  }
+
+  function loop(now) {
+    const dt = Math.min(0.033, (now - game.last) / 1000 || 0);
+    game.last = now;
+    update(dt);
+    render();
+    requestAnimationFrame(loop);
+  }
+
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
+
+1.0" />
   <title>僵尸生存：僵尸末日生存 - 经验转移版</title>
   <style>
     :root {
