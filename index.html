@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>僵尸生存：僵尸末日生存 - 终极魔王版</title>
+  <title>僵尸生存：僵尸末日生存 - 经验转移版</title>
   <style>
     :root {
       --bg: #0c1117;
@@ -88,6 +88,8 @@
     floatTexts: [],
     particles: [],
     bossAttacks: [],
+    magicBalls: [],
+    witch: { cooldown: 0, casting: 0 },
     bossSpawnedThisNight: false,
     bossSpawnTimer: 0,
     plots: [],
@@ -113,6 +115,11 @@
     guardHp: 120,
     guardDamage: 20,
     guardAggroRange: 320,
+    witchRange: 360,
+    witchDamage: 30,
+    witchAttackRadius: 72,
+    witchFireRate: 2.2,
+    witchProjectileSpeed: 470,
     towerHp: 100,
     towerDamage: 1,
     towerFireRate: 0.08,
@@ -178,7 +185,7 @@
     game.phaseTimer = rules.nightDuration;
     game.waveNumber = 0;
     game.money = 300;
-    game.message = '第一天黑夜：每波固定 5 只普通方块僵尸，普通僵尸 100 HP。第 2 天跑步者加入，第 3 天死神加入，第 4 天反效果僵尸加入，第 5 天开始每 5 天出现终极魔王。';
+    game.message = '第一天黑夜：每波固定 5 只普通方块僵尸，普通僵尸 100 HP。第 2 天跑步者加入，第 3 天死神加入，第 4 天反效果僵尸加入，第 5 天开始每 5 天出现终极魔王。城堡上方的女巫会自动丢魔法球，范围内僵尸扣 30 血。';
     game.messageTimer = 7;
     game.castle.hp = game.castle.maxHp;
     game.zombies.length = 0;
@@ -188,6 +195,9 @@
     game.floatTexts.length = 0;
     game.particles.length = 0;
     game.bossAttacks.length = 0;
+    game.magicBalls.length = 0;
+    game.witch.cooldown = 0;
+    game.witch.casting = 0;
     game.bossSpawnedThisNight = false;
     game.bossSpawnTimer = 0;
     game.selectedPlot = null;
@@ -212,6 +222,9 @@
     game.waveNumber = 0;
     game.wave = isUltimateBossDay(day) ? null : createWave(2.2);
     game.bossAttacks.length = 0;
+    game.magicBalls.length = 0;
+    game.witch.cooldown = 0;
+    game.witch.casting = 0;
     game.bossSpawnedThisNight = false;
     game.bossSpawnTimer = isUltimateBossDay(day) ? 4.0 : 0;
     const todayHp = zombieHpForDay(day);
@@ -318,7 +331,9 @@
     updateZombies(dt);
     updateGuards(dt);
     updateTowers(dt);
+    updateWitch(dt);
     updateBullets(dt);
+    updateMagicBalls(dt);
     updateBossAttacks(dt);
 
     if (game.castle.hp <= 0) {
@@ -621,6 +636,57 @@
     return best;
   }
 
+  function canTowerGainKillExperience(tower) {
+    return tower && tower.hp > 0 && tower.level < rules.towerMaxLevel && !tower.readyUpgrade;
+  }
+
+  function grantTowerKillExperience(tower, transferred = false) {
+    if (!canTowerGainKillExperience(tower)) return false;
+    tower.kills++;
+    if (transferred) {
+      showFloat('经验 +1', tower.x, tower.y - 82, '#ffe066');
+      for (let i = 0; i < 7; i++) addParticle(tower.x + rand(-18, 18), tower.y + rand(38, 58), rand(-25, 25), rand(-55, -12), '#ffe066', 0.42, 3);
+    }
+    if (tower.kills >= rules.towerKillsForUpgrade && tower.level < rules.towerMaxLevel) {
+      tower.readyUpgrade = true;
+      tower.kills = rules.towerKillsForUpgrade;
+      game.selectedTower = tower;
+      game.selectedPlot = null;
+      game.message = transferred
+        ? '满级炮台的击杀经验转移成功！有一座炮台金条亮了，可以免费升级。'
+        : '炮台金条亮了！点击炮台，选择免费升级属性。';
+      game.messageTimer = 5;
+    }
+    return true;
+  }
+
+  function transferKillExperienceFromMaxTower(sourceTower) {
+    const candidates = game.towers
+      .filter(t => t !== sourceTower && canTowerGainKillExperience(t))
+      .sort((a, b) => {
+        if (b.kills !== a.kills) return b.kills - a.kills; // 优先给金条快满的炮台。
+        return dist(sourceTower.x, sourceTower.y, a.x, a.y) - dist(sourceTower.x, sourceTower.y, b.x, b.y);
+      });
+    if (candidates.length === 0) return false;
+    return grantTowerKillExperience(candidates[0], true);
+  }
+
+  function awardTowerKillExperience(sourceTower) {
+    if (!sourceTower) return;
+    sourceTower.totalKills++;
+
+    if (canTowerGainKillExperience(sourceTower)) {
+      grantTowerKillExperience(sourceTower, false);
+      return;
+    }
+
+    // 满级炮台，或金条已经亮起还没选择升级的炮台，不再浪费击杀经验。
+    const transferred = transferKillExperienceFromMaxTower(sourceTower);
+    if (transferred) {
+      showFloat('经验转移', sourceTower.x, sourceTower.y - 94, '#ffe066');
+    }
+  }
+
   function damageZombie(z, amount, sourceTower, tag = '') {
     if (!z.alive) return;
     z.hp -= amount;
@@ -638,18 +704,7 @@
         showFloat('魔王倒下！', z.x, z.y - 110, '#fff2a8');
         screenShake(7);
       }
-      if (sourceTower) {
-        sourceTower.kills++;
-        sourceTower.totalKills++;
-        if (sourceTower.kills >= rules.towerKillsForUpgrade && sourceTower.level < rules.towerMaxLevel) {
-          sourceTower.readyUpgrade = true;
-          sourceTower.kills = rules.towerKillsForUpgrade;
-          game.selectedTower = sourceTower;
-          game.selectedPlot = null;
-          game.message = '炮台金条亮了！点击炮台，选择免费升级属性。';
-          game.messageTimer = 5;
-        }
-      }
+      if (sourceTower) awardTowerKillExperience(sourceTower);
     }
   }
 
@@ -744,6 +799,83 @@
       }
     }
     game.bullets = game.bullets.filter(b => !b.dead);
+  }
+
+
+  function witchPosition() {
+    return { x: game.castle.x + game.castle.w * 0.5, y: game.castle.y - 32 };
+  }
+
+  function updateWitch(dt) {
+    if (game.state !== STATE.PLAY) return;
+    game.witch.cooldown = Math.max(0, game.witch.cooldown - dt);
+    game.witch.casting = Math.max(0, game.witch.casting - dt);
+    if (game.witch.cooldown > 0) return;
+
+    const pos = witchPosition();
+    const target = foremostZombieInRange(pos.x, pos.y, rules.witchRange, '女巫魔法');
+    if (!target) return;
+
+    game.witch.cooldown = rules.witchFireRate;
+    game.witch.casting = 0.45;
+    fireWitchMagic(target);
+  }
+
+  function fireWitchMagic(target) {
+    const pos = witchPosition();
+    game.magicBalls.push({
+      x: pos.x + 18,
+      y: pos.y + 8,
+      target,
+      tx: target.x,
+      ty: target.y,
+      speed: rules.witchProjectileSpeed,
+      radius: rules.witchAttackRadius,
+      damage: rules.witchDamage,
+      life: 1.8,
+      dead: false
+    });
+    showFloat('女巫施法！', pos.x + 10, pos.y - 34, '#dca6ff');
+    for (let i = 0; i < 10; i++) addParticle(pos.x + 16, pos.y + 6, rand(-35, 35), rand(-45, 5), '#dca6ff', 0.38, 3);
+  }
+
+  function updateMagicBalls(dt) {
+    for (const m of game.magicBalls) {
+      m.life -= dt;
+      if (m.life <= 0) {
+        m.dead = true;
+        continue;
+      }
+      if (m.target && m.target.alive) {
+        m.tx = m.target.x;
+        m.ty = m.target.y - 18;
+      }
+      const d = dist(m.x, m.y, m.tx, m.ty);
+      if (d < 13) {
+        explodeWitchMagic(m);
+        m.dead = true;
+      } else {
+        const a = Math.atan2(m.ty - m.y, m.tx - m.x);
+        m.x += Math.cos(a) * m.speed * dt;
+        m.y += Math.sin(a) * m.speed * dt;
+      }
+    }
+    game.magicBalls = game.magicBalls.filter(m => !m.dead);
+  }
+
+  function explodeWitchMagic(m) {
+    showFloat('魔法爆炸 -' + m.damage, m.x, m.y - m.radius - 8, '#f2c2ff');
+    let hitCount = 0;
+    for (const z of game.zombies) {
+      if (!z.alive || z.materializeTimer > 0) continue;
+      if (dist(z.x, z.y - 22, m.x, m.y) <= m.radius) {
+        damageZombie(z, m.damage, null, '女巫');
+        showFloat('-' + m.damage, z.x, z.y - 44, '#f2c2ff');
+        hitCount++;
+      }
+    }
+    if (hitCount > 0) screenShake(2.5);
+    for (let i = 0; i < 34; i++) addParticle(m.x + rand(-m.radius * 0.5, m.radius * 0.5), m.y + rand(-m.radius * 0.35, m.radius * 0.35), rand(-95, 95), rand(-120, 40), i % 2 ? '#dca6ff' : '#ffffff', 0.62, rand(3, 6));
   }
 
   function applyBulletHit(b) {
@@ -1124,6 +1256,7 @@
     drawPath();
     drawPlots();
     drawCastle(game.castle.x, game.castle.y, game.castle.w, game.castle.h, game.castle.hp, game.castle.maxHp, false);
+    drawWitch();
     drawGhostWarning();
     drawBossAttacks();
 
@@ -1143,6 +1276,7 @@
     for (const g of game.guards) drawGuard(g);
     for (const z of game.zombies) drawZombieActor(z);
     for (const b of game.bullets) drawBullet(b);
+    for (const m of game.magicBalls) drawMagicBall(m);
   }
 
   function drawDayBackground() {
@@ -1371,6 +1505,96 @@
     if (!intro) {
       drawHealthBar(x + 8, y - 28, w - 16, 14, hp, maxHp, '城堡 HP ' + Math.ceil(hp) + '/' + maxHp, '#e45d5d');
     }
+  }
+
+
+  function drawWitch() {
+    const p = witchPosition();
+    ctx.save();
+    const bob = Math.sin(game.time * 3) * 2;
+    const casting = game.witch.casting > 0;
+    ctx.translate(p.x, p.y + bob);
+
+    // 魔法范围淡淡显示，告诉玩家女巫会守城。
+    ctx.globalAlpha = 0.06;
+    ctx.fillStyle = '#dca6ff';
+    ctx.beginPath();
+    ctx.arc(0, 30, rules.witchRange, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+
+    // 帽子
+    ctx.fillStyle = '#34204b';
+    ctx.beginPath();
+    ctx.moveTo(-24, -6);
+    ctx.lineTo(0, -58);
+    ctx.lineTo(24, -6);
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle = '#7a4ca8';
+    ctx.fillRect(-27, -8, 54, 8);
+    ctx.fillStyle = '#f6c453';
+    ctx.fillRect(-6, -24, 12, 7);
+
+    // 頭、身體
+    ctx.fillStyle = '#f0c6a0';
+    ctx.fillRect(-12, -4, 24, 22);
+    ctx.fillStyle = '#472463';
+    ctx.fillRect(-18, 18, 36, 38);
+    ctx.fillStyle = '#6f3c98';
+    ctx.fillRect(-12, 26, 24, 25);
+
+    // 眼睛
+    ctx.fillStyle = '#111';
+    ctx.fillRect(-7, 5, 4, 4);
+    ctx.fillRect(4, 5, 4, 4);
+
+    // 魔法棒
+    const wandAngle = casting ? -0.72 : -0.35;
+    ctx.save();
+    ctx.translate(17, 22);
+    ctx.rotate(wandAngle);
+    ctx.strokeStyle = '#d8aa63';
+    ctx.lineWidth = 5;
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.lineTo(48, 0);
+    ctx.stroke();
+    ctx.fillStyle = casting ? '#fff2ff' : '#dca6ff';
+    ctx.beginPath();
+    ctx.arc(53, 0, casting ? 9 : 6, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+
+    ctx.font = 'bold 13px "Microsoft YaHei"';
+    ctx.textAlign = 'center';
+    ctx.strokeStyle = 'rgba(0,0,0,0.8)';
+    ctx.lineWidth = 3;
+    ctx.strokeText('女巫守護者', 0, -68);
+    ctx.fillStyle = '#f2c2ff';
+    ctx.fillText('女巫守護者', 0, -68);
+    ctx.restore();
+  }
+
+  function drawMagicBall(m) {
+    ctx.save();
+    const pulse = 1 + Math.sin(game.time * 12) * 0.16;
+    ctx.fillStyle = '#f8ddff';
+    ctx.beginPath();
+    ctx.arc(m.x, m.y, 9 * pulse, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = 0.42;
+    ctx.strokeStyle = '#dca6ff';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(m.x, m.y, m.radius, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.globalAlpha = 0.75;
+    ctx.fillStyle = '#dca6ff';
+    ctx.beginPath();
+    ctx.arc(m.x, m.y, 16 * pulse, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
   }
 
   function drawBuildPhaseBanner() {
@@ -1879,6 +2103,7 @@
     drawHudBox(260, 13, 146, 50, '城堡', Math.ceil(game.castle.hp) + '/' + game.castle.maxHp, '#ff8a8a');
     drawHudBox(418, 13, 138, 50, phaseName, formatTime(game.phaseTimer), '#b5d4ff');
     drawHudBox(568, 13, 72, 50, '波数', game.wave ? ((game.waveNumber + 1) + '波') : '-', '#a8ffb2');
+    drawHudBox(820, 13, 154, 50, '女巫', '范围伤害 ' + rules.witchDamage, '#f2c2ff');
 
     const btn = {
       x: 650, y: 16, w: 152, h: 46,
@@ -1930,7 +2155,7 @@
 
     ctx.fillStyle = '#a7d5a5';
     ctx.font = '13px "Microsoft YaHei"';
-    ctx.fillText('规则：初始金币 $300；普通炮台 $100；选中炮台可花 $500 强化；第二天跑步者；第三天死神 1000 HP，会传送。', 32, panelY + 64);
+    ctx.fillText('规则：初始金币 $300；普通炮台 $100；满级炮台击杀会把经验转给未满级炮台；第二天跑步者；第三天死神。', 32, panelY + 64);
   }
 
   function drawSelectionPanel() {
@@ -2162,7 +2387,7 @@
   }
 
   function isZombieImmuneToElement(z, kind) {
-    if (!z || !z.immuneElements || !kind) return false;
+    if (!z || !z.immuneElements || !kind || kind === '女巫魔法') return false;
     return z.immuneElements.includes(kind);
   }
 
@@ -2172,6 +2397,7 @@
       case '火焰': return '#ff8a3d';
       case '寒冰': return '#8ad8ff';
       case '草地': return '#79d66b';
+      case '女巫魔法': return '#dca6ff';
       default: return '#f0e1a1';
     }
   }
